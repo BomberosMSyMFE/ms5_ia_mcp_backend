@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Large AI Model weights (downloaded on demand or mounted via volumes)
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# Environments
+venv/
+.venv/
+env/
+
+# Pytest
+.pytest_cache/
+.coverage
+
+# Secrets
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
