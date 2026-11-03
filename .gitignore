@@ -24,8 +24,14 @@ env/
 .env
 .env.local
 
+# Generated Runtime Reports (Multimodal artifacts)
+static/generated_reports/*
+!static/generated_reports/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+commits.sh

@@ -1,10 +1,31 @@
+# MS-05 IA Core & MCP Backend Requirements
+# Semestre 2/2026 - INF512 UAGRM
+# Autores: Nataly Martínez (Reportes Multimodales & Seguridad MCP AST) y Jael (Visión YOLOv8 & NLP Triaje)
+
+# Core Framework
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
 python-multipart>=0.0.9
+httpx>=0.27.0
+
+# Visión Artificial & NLP (Módulo Jael)
 scikit-learn>=1.4.0
 ultralytics>=8.2.0
 pillow>=10.3.0
 torch>=2.2.0
+
+# Seguridad Defensiva AST & FastMCP (Módulo Nataly)
+sqlglot>=23.0.0
+
+# Reconocimiento Acústico Speech-to-Text (Módulo Nataly)
+faster-whisper>=1.0.0
+
+# Compilación Multimodal de Reportes (Módulo Nataly)
+weasyprint>=61.0
+openpyxl>=3.1.2
+edge-tts>=6.1.0
+
+# Testing
 pytest>=8.2.0
 pytest-asyncio>=0.23.0

@@ -1,16 +1,35 @@
+"""
+api/main_ia.py
+Servidor API FastAPI para MS-05 IA Core y Servidor MCP.
+Equipo:
+  - Nataly Martínez: Reportes Multimodales por Voz (CU-07) y Parser Sintáctico AST (Seguridad MCP)
+  - Jael: Visión Artificial (YOLOv8) y Triaje NLP Supervisado
+"""
+
+import os
 from fastapi import FastAPI, File, UploadFile, HTTPException, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from services.computer_vision.vision_service import inferir_evidencia_imagen
 from services.nlp_triage.nlp_triage import clasificar_urgencia_texto
+from api.routers.reports_router import reports_router
+from api.routers.mcp_router import mcp_router
 
 app_ia = FastAPI(
-    title="MS-05 IA Core - Modulo Jael (Vision y NLP)",
-    version="1.0.0",
-    description="Microservicio de inferencia cognitiva: Deep Learning (YOLOv8) y NLP Supervisado (TF-IDF + Random Forest)."
+    title="MS-05 IA Core & MCP Security Server",
+    version="2.0.0",
+    description=(
+        "Microservicio cognitivo y defensivo del Sistema de Bomberos Santa Cruz.\n\n"
+        "**Módulos Operativos:**\n"
+        "- **Reportes Multimodales por Voz (Nataly):** Pipeline de 4 etapas (Faster-Whisper, RAG Grounding, Markdown, PDF WeasyPrint, Excel OpenPyXL, Audio Edge-TTS).\n"
+        "- **Seguridad MCP & Validador AST (Nataly):** Inspección sintáctica estricta con `sqlglot` y bloqueo anti-inyección.\n"
+        "- **Visión Artificial (Jael):** Clasificación de evidencia fotográfica con YOLOv8.\n"
+        "- **Triaje NLP (Jael):** Clasificación automática de severidad en denuncias ciudadanas."
+    )
 )
 
+# Configuración de CORS
 app_ia.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,24 +38,70 @@ app_ia.add_middleware(
     allow_headers=["*"],
 )
 
-@app_ia.get("/", tags=["Info"])
+# Inclusión de Routers Modulares
+app_ia.include_router(reports_router)
+app_ia.include_router(mcp_router)
+
+
+# =========================================================================
+# ENDPOINTS DE INFORMACIÓN Y SALUD
+# =========================================================================
+
+@app_ia.get("/", tags=["Información del Sistema"])
 async def root():
     return {
-        "microservicio": "MS-05 IA Core - Modulo Vision y NLP",
+        "microservicio": "MS-05 IA Core & MCP Security Server",
         "estado": "ACTIVO",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "semestre": "2/2026 - INF512 UAGRM",
         "documentacion_swagger": "/docs",
         "health": "/health",
-        "endpoints": {
-            "nlp_triaje": "POST /api/v1/nlp/clasificar-urgencia",
-            "vision_archivo": "POST /api/v1/vision/validar-evidencia",
-            "vision_url": "POST /api/v1/vision/validar-evidencia-url"
+        "modulos": {
+            "modulo_nataly_reportes": {
+                "descripcion": "Voice-to-Report Multimodal (CU-07) & Parser AST (sqlglot)",
+                "endpoints": [
+                    "POST /api/v1/reportes/generar-por-voz",
+                    "POST /api/v1/reportes/generar-por-texto",
+                    "GET /api/v1/reportes/descargar/pdf/{id_reporte}",
+                    "GET /api/v1/reportes/descargar/excel/{id_reporte}",
+                    "GET /api/v1/reportes/reproducir/audio/{id_reporte}",
+                    "GET /api/v1/reportes/{id_reporte}",
+                    "POST /api/v1/mcp/validar-sql",
+                    "POST /api/v1/mcp/ejecutar-sql-seguro",
+                    "GET /api/v1/mcp/herramientas",
+                    "POST /api/v1/mcp/herramientas/{tool_name}/ejecutar"
+                ]
+            },
+            "modulo_jael_vision_nlp": {
+                "descripcion": "Inferencia YOLOv8 y Triaje Supervisado de Denuncias",
+                "endpoints": [
+                    "POST /api/v1/vision/validar-evidencia",
+                    "POST /api/v1/vision/validar-evidencia-url",
+                    "POST /api/v1/nlp/clasificar-urgencia"
+                ]
+            }
         }
     }
+
+
+@app_ia.get("/health", tags=["Información del Sistema"])
+async def health():
+    return {
+        "status": "HEALTHY",
+        "service": "ms5_ia_mcp_backend",
+        "version": "2.0.0",
+        "modulos_activos": ["RAG_VOICE_REPORTS", "AST_MCP_SECURITY", "VISION_YOLO", "NLP_TRIAGE"]
+    }
+
 
 @app_ia.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return Response(status_code=204)
+
+
+# =========================================================================
+# ENDPOINTS DE VISIÓN ARTIFICIAL Y NLP (MÓDULO JAEL)
+# =========================================================================
 
 MIME_TYPES_PERMITIDOS = [
     "image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff",
@@ -44,18 +109,21 @@ MIME_TYPES_PERMITIDOS = [
 ]
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024
 
+
 class NLPInputDTO(BaseModel):
     texto: str = Field(..., description="Texto de la denuncia ciudadana")
 
-class VisionURLInputDTO(BaseModel):
-    imagen_url: str = Field(..., description="URL publica de la evidencia")
 
-@app_ia.post("/api/v1/vision/validar-evidencia", tags=["Vision Artificial"])
+class VisionURLInputDTO(BaseModel):
+    imagen_url: str = Field(..., description="URL pública de la evidencia")
+
+
+@app_ia.post("/api/v1/vision/validar-evidencia", tags=["Visión Artificial (Jael)"])
 async def validar_evidencia_archivo(archivo: UploadFile = File(..., description="Archivo de imagen o video")):
     if archivo.content_type not in MIME_TYPES_PERMITIDOS:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"Formato no permitido ('{archivo.content_type}'). Solo imagenes y videos."
+            detail=f"Formato no permitido ('{archivo.content_type}'). Solo imágenes y videos."
         )
 
     try:
@@ -71,7 +139,8 @@ async def validar_evidencia_archivo(archivo: UploadFile = File(..., description=
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-@app_ia.post("/api/v1/vision/validar-evidencia-url", tags=["Vision Artificial"])
+
+@app_ia.post("/api/v1/vision/validar-evidencia-url", tags=["Visión Artificial (Jael)"])
 async def validar_evidencia_url(payload: VisionURLInputDTO):
     url_lower = payload.imagen_url.lower()
     if any(k in url_lower for k in ["fuego", "humo", "fire", "tinglado", "incendio"]):
@@ -88,17 +157,11 @@ async def validar_evidencia_url(payload: VisionURLInputDTO):
         "motor": "YOLOv8 Deep Learning (URL Inspector)"
     }
 
-@app_ia.post("/api/v1/nlp/clasificar-urgencia", tags=["NLP Triaje"])
+
+@app_ia.post("/api/v1/nlp/clasificar-urgencia", tags=["NLP Triaje (Jael)"])
 async def clasificar_urgencia(payload: NLPInputDTO):
     return clasificar_urgencia_texto(payload.texto)
 
-@app_ia.get("/health", tags=["Health"])
-async def health():
-    return {
-        "status": "HEALTHY",
-        "service": "ms5_ia_mcp_backend",
-        "version": "1.0.0"
-    }
 
 if __name__ == "__main__":
     import uvicorn
