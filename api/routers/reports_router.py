@@ -9,7 +9,8 @@ Responsable: Nataly Martínez (ms5_ia_mcp_backend)
 """
 
 import os
-from fastapi import APIRouter, File, UploadFile, HTTPException, Query, status
+import logging
+from fastapi import APIRouter, File, UploadFile, HTTPException, Query, status, Depends
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from services.reports_rag.reports_service import (
@@ -17,8 +18,18 @@ from services.reports_rag.reports_service import (
     GenerarReporteTextoRequest,
     ReporteRespuestaDTO
 )
+from services.security import (
+    validar_operador_guard,
+    UsuarioAutenticado
+)
 
-reports_router = APIRouter(prefix="/api/v1/reportes", tags=["Reportes Multimodales por Voz"])
+logger = logging.getLogger("reports_router")
+
+reports_router = APIRouter(
+    prefix="/api/v1/reportes",
+    tags=["Reportes Multimodales por Voz"],
+    dependencies=[Depends(validar_operador_guard)]
+)
 
 EXTENSIONES_AUDIO_VALIDAS = ["wav", "mp3", "m4a", "ogg", "webm", "flac"]
 MAX_AUDIO_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB
@@ -33,8 +44,10 @@ MAX_AUDIO_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB
 async def generar_reporte_por_voz(
     archivo_audio: UploadFile = File(..., description="Nota de voz o mensaje radial (WAV, MP3, OGG, WebM)"),
     generar_multimodal: bool = Query(True, description="Si es True, compila PDF WeasyPrint, Excel y Audio Edge-TTS"),
-    voz_tts: str = Query("es-BO-MarceloNeural", description="Voz neural Edge-TTS para el briefing radial (ej. es-BO-MarceloNeural, es-BO-SofiaNeural)")
+    voz_tts: str = Query("es-BO-MarceloNeural", description="Voz neural Edge-TTS para el briefing radial (ej. es-BO-MarceloNeural, es-BO-SofiaNeural)"),
+    usuario: UsuarioAutenticado = Depends(validar_operador_guard)
 ):
+    logger.info(f"[Voice-to-Report] Solicitud autorizada para {usuario.email} ({usuario.rol})")
     # Validar extensión del archivo
     filename = archivo_audio.filename or "audio.wav"
     ext = filename.split(".")[-1].lower() if "." in filename else "wav"
@@ -80,7 +93,11 @@ async def generar_reporte_por_voz(
     summary="Generar reporte táctico multimodal a partir de comando en texto",
     description="Acepta instrucciones en lenguaje natural emitidas por consola o sala de crisis, ejecutando RAG Grounding y compilación multimodal."
 )
-async def generar_reporte_por_texto(payload: GenerarReporteTextoRequest):
+async def generar_reporte_por_texto(
+    payload: GenerarReporteTextoRequest,
+    usuario: UsuarioAutenticado = Depends(validar_operador_guard)
+):
+    logger.info(f"[Text-to-Report] Solicitud autorizada para {usuario.email} ({usuario.rol})")
     if not payload.instruccion or not payload.instruccion.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
