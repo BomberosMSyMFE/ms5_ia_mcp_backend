@@ -65,8 +65,11 @@ async def root():
         "health": "/health",
         "modulos": {
             "modulo_nataly_reportes": {
-                "descripcion": "Voice-to-Report Multimodal (CU-07) & Parser AST (sqlglot)",
+                "descripcion": "Voice-to-Report Multimodal & Reportes Dinámicos (CU-07) & Parser AST (sqlglot)",
                 "endpoints": [
+                    "GET /api/v1/reportes/esquemas-tablas",
+                    "POST /api/v1/reportes/generar-dinamico",
+                    "POST /api/v1/reportes/generar-dinamico-voz",
                     "POST /api/v1/reportes/generar-por-voz",
                     "POST /api/v1/reportes/generar-por-texto",
                     "GET /api/v1/reportes/descargar/pdf/{id_reporte}",
