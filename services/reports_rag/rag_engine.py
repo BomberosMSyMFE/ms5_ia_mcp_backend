@@ -132,15 +132,56 @@ class RAGEngine:
             "siniestros_semana": list(DATOS_OPERATIVOS_SISTEMA["siniestros_semana"])
         }
 
-        # 1. Consulta REST a MS-02 Flotas (Maikol)
-        try:
-            import httpx
-            with httpx.Client(timeout=1.5) as client:
-                resp_flota = client.get(f"{ms02_url}/api/v1/flotas/camiones")
-                if resp_flota.status_code == 200:
-                    datos["flota"] = resp_flota.json()
-        except Exception as e:
-            logger.info(f"[RAG Grounding] MS-02 Flotas no disponible ({e}), usando telemetría en caché local.")
+        # 1. Consulta REST a MS-02 Flotas (Maikol - Contrato ms2_contrato.yaml)
+        # Endpoints probados: /api/v1/flotas/unidades/activas (Spring Boot 8080 / Prism 8082)
+        urls_a_probar = [ms02_url]
+        if ":8080" in ms02_url:
+            urls_a_probar.append(ms02_url.replace(":8080", ":8082"))
+        elif ":8082" in ms02_url:
+            urls_a_probar.append(ms02_url.replace(":8082", ":8080"))
+
+        flota_obtenida = False
+        for url_candidata in urls_a_probar:
+            if flota_obtenida:
+                break
+            try:
+                import httpx
+                with httpx.Client(timeout=1.5) as client:
+                    resp_flota = client.get(f"{url_candidata}/api/v1/flotas/unidades/activas")
+                    if resp_flota.status_code == 200:
+                        raw_camiones = resp_flota.json()
+                        if isinstance(raw_camiones, list) and len(raw_camiones) > 0:
+                            flota_adaptada = []
+                            for c in raw_camiones:
+                                lat = float(c.get("latitud", -17.78))
+                                if lat > -17.77:
+                                    cuad = "NORTE"
+                                elif lat < -17.80:
+                                    cuad = "SUR"
+                                else:
+                                    cuad = "CENTRO"
+
+                                flota_adaptada.append({
+                                    "id": str(c.get("id", "CAM-01")),
+                                    "placa": str(c.get("placa", "0000-SCZ")),
+                                    "tipo": str(c.get("tipo", "CISTERNA")).replace("_", " ").title(),
+                                    "capacidad_max": int(c.get("capacidadMaximaAgua", c.get("capacidad_max", 10000))),
+                                    "agua_actual": int(c.get("litrosAguaActual", c.get("agua_actual", 8000))),
+                                    "cuadrante": c.get("cuadrante", cuad),
+                                    "estado": str(c.get("estadoOperativo", c.get("estado", "DISPONIBLE"))),
+                                    "combustible_pct": int(c.get("combustiblePorcentaje", 100)),
+                                    "presion_bomba_bar": float(c.get("presion_bomba_bar", 12.0)),
+                                    "latitud": lat,
+                                    "longitud": float(c.get("longitud", -63.18))
+                                })
+                            datos["flota"] = flota_adaptada
+                            flota_obtenida = True
+                            logger.info(f"[RAG Grounding] {len(flota_adaptada)} unidades sincronizadas desde MS-02 Flotas ({url_candidata}).")
+            except Exception as e:
+                logger.debug(f"[RAG Grounding] Fallo intento con {url_candidata}: {e}")
+
+        if not flota_obtenida:
+            logger.info("[RAG Grounding] MS-02 Flotas no respondió en puertos configurados; usando telemetría en caché local.")
 
         # 2. Consulta GraphQL a MS-03 Inventario (Jael)
         try:

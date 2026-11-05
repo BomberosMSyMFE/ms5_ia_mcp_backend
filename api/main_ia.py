@@ -29,13 +29,20 @@ app_ia = FastAPI(
     )
 )
 
-# Configuración de CORS
+# Configuración estricta de CORS con credenciales (W3C Standard)
+cors_origins_env = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:4200,http://localhost:4201,http://127.0.0.1:4200,http://127.0.0.1:4201"
+)
+allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+
 app_ia.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Inclusión de Routers Modulares

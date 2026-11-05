@@ -110,7 +110,46 @@ def consultar_stock_estacion(nombre_estacion: str, categoria: str) -> List[Dict[
 def consultar_camiones_disponibles(cuadrante: str = "TODOS") -> List[Dict[str, Any]]:
     """
     Herramienta MCP: Retorna la flota de camiones cisterna y ataque con sus niveles de agua.
+    Si USE_MOCKS=false: Consulta en vivo el contrato MS-02 (/api/v1/flotas/unidades/activas).
+    Si USE_MOCKS=true o fallo de red: Retorna datos deterministas del mock local.
     """
+    use_mocks = os.getenv("USE_MOCKS", "true").lower() in ("true", "1", "yes")
+    if not use_mocks:
+        ms02_url = os.getenv("MS02_FLOTAS_URL", "http://localhost:8080")
+        urls_a_probar = [ms02_url]
+        if ":8080" in ms02_url:
+            urls_a_probar.append(ms02_url.replace(":8080", ":8082"))
+        elif ":8082" in ms02_url:
+            urls_a_probar.append(ms02_url.replace(":8082", ":8080"))
+
+        for url_candidata in urls_a_probar:
+            try:
+                import httpx
+                with httpx.Client(timeout=1.5) as client:
+                    resp = client.get(f"{url_candidata}/api/v1/flotas/unidades/activas")
+                    if resp.status_code == 200:
+                        camiones_vivos = []
+                        for c in resp.json():
+                            lat = float(c.get("latitud", -17.78))
+                            cuad = "NORTE" if lat > -17.77 else ("SUR" if lat < -17.80 else "CENTRO")
+                            camiones_vivos.append({
+                                "id": str(c.get("id", "CAM-01")),
+                                "placa": str(c.get("placa", "0000-SCZ")),
+                                "tipo": str(c.get("tipo", "Cisterna")).replace("_", " ").title(),
+                                "capacidad_agua": int(c.get("capacidadMaximaAgua", 10000)),
+                                "agua_actual": int(c.get("litrosAguaActual", 8000)),
+                                "estado": str(c.get("estadoOperativo", c.get("estado", "DISPONIBLE"))),
+                                "cuadrante": str(c.get("cuadrante", cuad)),
+                                "combustible_porcentaje": int(c.get("combustiblePorcentaje", 100))
+                            })
+                        if camiones_vivos:
+                            cuad_upper = cuadrante.upper()
+                            if cuad_upper == "TODOS":
+                                return camiones_vivos
+                            return [c for c in camiones_vivos if c["cuadrante"] == cuad_upper]
+            except Exception:
+                continue
+
     cuad_upper = cuadrante.upper()
     if cuad_upper == "TODOS":
         return BASE_DATOS_SOLO_LECTURA_MOCK["camiones"]

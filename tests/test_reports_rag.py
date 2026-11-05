@@ -15,6 +15,7 @@ from services.reports_rag.rag_engine import RAGEngine, ReporteParametros
 from services.reports_rag.multimodal_generator import MultimodalGenerator
 from services.reports_rag.whisper_service import WhisperService
 from services.reports_rag.reports_service import ReportsService
+from services.security import crear_token_prueba, COOKIE_NAME
 from api.main_ia import app_ia
 
 
@@ -157,18 +158,20 @@ async def test_reports_service_end_to_end():
 
 
 # =========================================================================
-# PRUEBAS DE INTEGRACIÓN DE ENDPOINTS API (HTTPX)
+# PRUEBAS DE INTEGRACIÓN DE ENDPOINTS API (HTTPX) Y SEGURIDAD SSO
 # =========================================================================
 
 @pytest.mark.asyncio
-async def test_api_generar_reporte_por_texto():
+async def test_api_generar_reporte_por_texto_con_token_operador():
+    token_operador = crear_token_prueba(rol="OPERADOR")
     transport = ASGITransport(app=app_ia)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         payload = {
             "instruccion": "Informe táctico de abastecimiento en Cuadrante Centro",
             "generar_multimodal": True
         }
-        resp = await client.post("/api/v1/reportes/generar-por-texto", json=payload)
+        headers = {"Authorization": f"Bearer {token_operador}"}
+        resp = await client.post("/api/v1/reportes/generar-por-texto", json=payload, headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert "id_reporte" in data
@@ -178,21 +181,99 @@ async def test_api_generar_reporte_por_texto():
 
         id_reporte = data["id_reporte"]
 
-        # Descargar PDF compilado
-        pdf_resp = await client.get(f"/api/v1/reportes/descargar/pdf/{id_reporte}")
+        # Descargar PDF compilado con token
+        pdf_resp = await client.get(f"/api/v1/reportes/descargar/pdf/{id_reporte}", headers=headers)
         assert pdf_resp.status_code == 200
         assert pdf_resp.headers["content-type"] == "application/pdf"
         assert len(pdf_resp.content) > 5000
 
-        # Descargar Excel compilado
-        excel_resp = await client.get(f"/api/v1/reportes/descargar/excel/{id_reporte}")
+        # Descargar Excel compilado con token
+        excel_resp = await client.get(f"/api/v1/reportes/descargar/excel/{id_reporte}", headers=headers)
         assert excel_resp.status_code == 200
         assert "spreadsheetml" in excel_resp.headers["content-type"]
 
-        # Consultar Markdown
-        md_resp = await client.get(f"/api/v1/reportes/{id_reporte}")
+        # Consultar Markdown con token
+        md_resp = await client.get(f"/api/v1/reportes/{id_reporte}", headers=headers)
         assert md_resp.status_code == 200
         assert "markdown" in md_resp.json()
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_sin_autenticacion_retorna_401():
+    """Verifica que el acceso anónimo sea rechazado inmediatamente con HTTP 401."""
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/reportes/generar-por-texto",
+            json={"instruccion": "Intento no autorizado de generación", "generar_multimodal": False}
+        )
+        assert resp.status_code == 401
+        assert "Acceso no autorizado" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_token_invalido_retorna_401():
+    """Verifica que un token alterado o malformado retorne HTTP 401."""
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": "Bearer token_falsificado_y_manipulado_123"}
+        resp = await client.post(
+            "/api/v1/reportes/generar-por-texto",
+            json={"instruccion": "Prueba de token invalido", "generar_multimodal": False},
+            headers=headers
+        )
+        assert resp.status_code == 401
+        assert "inválido" in resp.json()["detail"] or "alterado" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_token_expirado_retorna_401():
+    """Verifica que un token vencido retorne HTTP 401."""
+    token_expirado = crear_token_prueba(rol="OPERADOR", exp_seconds=-3600)
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": f"Bearer {token_expirado}"}
+        resp = await client.post(
+            "/api/v1/reportes/generar-por-texto",
+            json={"instruccion": "Prueba de token expirado", "generar_multimodal": False},
+            headers=headers
+        )
+        assert resp.status_code == 401
+        assert "expirada" in resp.json()["detail"] or "vencido" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_rol_bombero_retorna_403():
+    """
+    Control RBAC: Rol 'BOMBERO' tiene prohibido emitir reportes tácticos de comando.
+    Debe retornar HTTP 403 Forbidden.
+    """
+    token_bombero = crear_token_prueba(rol="BOMBERO")
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": f"Bearer {token_bombero}"}
+        resp = await client.post(
+            "/api/v1/reportes/generar-por-texto",
+            json={"instruccion": "Intento de bombero de emitir reporte", "generar_multimodal": False},
+            headers=headers
+        )
+        assert resp.status_code == 403
+        assert "Acceso denegado" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_autenticado_por_cookie_httponly():
+    """Verifica que la cookie HttpOnly 'token_sesion' (emitida por MS-01) sea aceptada."""
+    token_admin = crear_token_prueba(rol="ADMINISTRADOR")
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test", cookies={COOKIE_NAME: token_admin}) as client:
+        payload = {
+            "instruccion": "Resumen por administrador via Cookie HttpOnly",
+            "generar_multimodal": False
+        }
+        resp = await client.post("/api/v1/reportes/generar-por-texto", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["id_reporte"] is not None
 
 
 @pytest.mark.asyncio
