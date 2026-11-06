@@ -15,6 +15,7 @@ from services.computer_vision.vision_service import inferir_evidencia_imagen
 from services.nlp_triage.nlp_triage import clasificar_urgencia_texto
 from api.routers.reports_router import reports_router
 from api.routers.mcp_router import mcp_router
+from api.routers.maintenance_router import maintenance_router
 
 app_ia = FastAPI(
     title="MS-05 IA Core & MCP Security Server",
@@ -25,7 +26,8 @@ app_ia = FastAPI(
         "- **Reportes Multimodales por Voz (Nataly):** Pipeline de 4 etapas (Faster-Whisper, RAG Grounding, Markdown, PDF WeasyPrint, Excel OpenPyXL, Audio Edge-TTS).\n"
         "- **Seguridad MCP & Validador AST (Nataly):** Inspección sintáctica estricta con `sqlglot` y bloqueo anti-inyección.\n"
         "- **Visión Artificial (Jael):** Clasificación de evidencia fotográfica con YOLOv8.\n"
-        "- **Triaje NLP (Jael):** Clasificación automática de severidad en denuncias ciudadanas."
+        "- **Triaje NLP (Jael):** Clasificación automática de severidad en denuncias ciudadanas.\n"
+        "- **Mantenimiento Predictivo ML (Jael):** Clasificación y regresión Random Forest para motobombas y mangueras."
     )
 )
 
@@ -48,6 +50,7 @@ app_ia.add_middleware(
 # Inclusión de Routers Modulares
 app_ia.include_router(reports_router)
 app_ia.include_router(mcp_router)
+app_ia.include_router(maintenance_router)
 
 
 # =========================================================================
@@ -89,6 +92,14 @@ async def root():
                     "POST /api/v1/vision/validar-evidencia-url",
                     "POST /api/v1/nlp/clasificar-urgencia"
                 ]
+            },
+            "modulo_jael_mantenimiento_predictivo": {
+                "descripcion": "Machine Learning Supervisado (Random Forest) para Equipos de Inventario (CU-06)",
+                "endpoints": [
+                    "POST /api/v1/mantenimiento/predecir",
+                    "POST /api/v1/mantenimiento/auditar-lote",
+                    "GET /api/v1/mantenimiento/umbrales"
+                ]
             }
         }
     }
@@ -100,7 +111,7 @@ async def health():
         "status": "HEALTHY",
         "service": "ms5_ia_mcp_backend",
         "version": "2.0.0",
-        "modulos_activos": ["RAG_VOICE_REPORTS", "AST_MCP_SECURITY", "VISION_YOLO", "NLP_TRIAGE"]
+        "modulos_activos": ["RAG_VOICE_REPORTS", "AST_MCP_SECURITY", "VISION_YOLO", "NLP_TRIAGE", "PREDICTIVE_MAINTENANCE"]
     }
 
 

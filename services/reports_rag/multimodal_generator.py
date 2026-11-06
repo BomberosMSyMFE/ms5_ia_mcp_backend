@@ -11,7 +11,10 @@ Responsable: Nataly Martínez (ms5_ia_mcp_backend)
 import io
 import logging
 from typing import Dict, Any, Optional
-import weasyprint
+try:
+    import weasyprint
+except (ImportError, OSError):
+    weasyprint = None
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -497,6 +500,8 @@ class MultimodalGenerator:
 </html>
 """.replace(",", ".")
 
+        if weasyprint is None:
+            raise RuntimeError("WeasyPrint no está disponible en este entorno local (falta GTK/GObject). Use el contenedor Docker Linux.")
         return weasyprint.HTML(string=html_content).write_pdf()
 
     def generar_excel(self, datos_reporte: Dict[str, Any]) -> bytes:
