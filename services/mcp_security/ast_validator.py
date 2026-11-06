@@ -22,6 +22,13 @@ TABLAS_PERMITIDAS_DEFAULT: Set[str] = {
     "tb_historial_incidente",
     "recursos_bomberos",
     "cuadrantes_operativos",
+    # Tablas de Inventario y Recursos (MS-03 PostgreSQL)
+    "suministros_quimicos",
+    "kits_epp",
+    "herramientas_equipos",
+    "estaciones_inventario",
+    "movimientos_inventario",
+    "transacciones_saga_inventario",
 }
 
 TOKENS_MODIFICACION_PROHIBIDOS: Set[str] = {

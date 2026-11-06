@@ -16,8 +16,9 @@ ultralytics>=8.2.0
 pillow>=10.3.0
 torch>=2.2.0
 
-# Seguridad Defensiva AST & FastMCP (Módulo Nataly)
+# Seguridad Defensiva AST & FastMCP (Módulo Nataly & Jael)
 sqlglot>=23.0.0
+psycopg2-binary>=2.9.9
 
 # Reconocimiento Acústico Speech-to-Text (Módulo Nataly)
 faster-whisper>=1.0.0

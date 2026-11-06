@@ -2,16 +2,54 @@
 services/mcp_security/mcp_server.py
 Servidor MCP (Model Context Protocol) para el Cuerpo de Bomberos.
 Expone herramientas tipadas en Pydantic y ejecución de consultas analíticas protegidas por AST.
+Conecta de forma segura a PostgreSQL (MS-03 Inventario) usando el usuario de menor privilegio `mcp_readonly_user`.
 Semestre 2/2026 - INF512 (Ingeniería de Software II)
-Responsable: Nataly Martínez (ms5_ia_mcp_backend)
+Autores: Nataly Martínez & Jael Mamani (ms5_ia_mcp_backend)
 """
 
 import os
+import logging
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 from .ast_validator import validar_consulta_ast, ASTValidator
 
-# Base de datos simulada en memoria para consultas analíticas seguras (Mock Realista)
+logger = logging.getLogger("mcp_server")
+
+# =========================================================================
+# CONFIGURACIÓN DE CONEXIÓN POSTGRESQL (CAPA 3: MENOR PRIVILEGIO)
+# =========================================================================
+MCP_DB_HOST = os.getenv("MCP_DB_HOST", "127.0.0.1")
+MCP_DB_PORT = int(os.getenv("MCP_DB_PORT", "5435"))
+MCP_DB_NAME = os.getenv("MCP_DB_NAME", "inventario_db")
+MCP_DB_USER = os.getenv("MCP_DB_USER", "mcp_readonly_user")
+MCP_DB_PASSWORD = os.getenv("MCP_DB_PASSWORD", "mcp_read_secret_2026")
+
+
+def obtener_conexion_mcp_readonly():
+    """
+    Establece conexión a PostgreSQL con el usuario dedicado de solo lectura.
+    Fuerza la sesión en readonly para garantizar defensa en profundidad.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=MCP_DB_HOST,
+            port=MCP_DB_PORT,
+            dbname=MCP_DB_NAME,
+            user=MCP_DB_USER,
+            password=MCP_DB_PASSWORD,
+            connect_timeout=2
+        )
+        conn.set_session(readonly=True, autocommit=True)
+        return conn
+    except Exception as e:
+        logger.warning(f"[MCP-POSTGRES] Base de datos no disponible ({MCP_DB_HOST}:{MCP_DB_PORT}): {e}. Operando en modo fallback.")
+        return None
+
+
+# Base de datos simulada en memoria para contingencias offline (Mock de Respaldo)
 BASE_DATOS_SOLO_LECTURA_MOCK = {
     "hidrantes": [
         {"id": "HID-SCZ-101", "latitud": -17.7654, "longitud": -63.1432, "caudal_litros_min": 1800, "estado": "OPERATIVO", "zona": "NORTE"},
@@ -55,8 +93,8 @@ class HidrantesInput(BaseModel):
 
 
 class StockInput(BaseModel):
-    nombre_estacion: str = Field(..., description="Nombre de la estación (ej. 'Central', 'Norte')")
-    categoria: str = Field(..., description="Categoría del insumo: EPP, QUIMICO, MATERIAL")
+    nombre_estacion: str = Field(..., description="Nombre de la estación (ej. 'Central', 'Norte', 'EST-01')")
+    categoria: str = Field(..., description="Categoría del insumo: EPP, QUIMICO, HERRAMIENTA, MATERIAL o TODOS")
 
 
 class CamionesInput(BaseModel):
@@ -76,10 +114,8 @@ def verificar_hidrantes_cercanos(latitud: float, longitud: float, radio_metros: 
     Herramienta MCP: Busca hidrantes presurizados cercanos a una coordenada.
     Usa parámetros tipados, imposibilitando inyecciones SQL.
     """
-    # Simula cálculo de distancia euclidiana simplificada para el mock local
     resultados = []
     for h in BASE_DATOS_SOLO_LECTURA_MOCK["hidrantes"]:
-        # Distancia aproximada en metros (1 grado ~ 111,000 m)
         dx = (h["longitud"] - longitud) * 111000 * 0.95
         dy = (h["latitud"] - latitud) * 111000
         distancia = round((dx**2 + dy**2)**0.5, 1)
@@ -97,13 +133,85 @@ def verificar_hidrantes_cercanos(latitud: float, longitud: float, radio_metros: 
 
 def consultar_stock_estacion(nombre_estacion: str, categoria: str) -> List[Dict[str, Any]]:
     """
-    Herramienta MCP: Consulta existencias de material crítico en una estación.
+    Herramienta MCP: Consulta existencias de insumos en la base de datos PostgreSQL real de Inventario
+    utilizando el usuario de solo lectura `mcp_readonly_user`.
     """
     cat_upper = categoria.upper()
+    conn = obtener_conexion_mcp_readonly()
+
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                resultados = []
+
+                # 1. Consultar Químicos en PostgreSQL
+                if cat_upper in ["QUIMICO", "TODOS"]:
+                    cur.execute("""
+                        SELECT sq.codigo as id, sq.nombre, 'QUIMICO' as categoria,
+                               sq.litros_disponibles, COALESCE(e.nombre, sq.estacion_id) as estacion
+                        FROM suministros_quimicos sq
+                        LEFT JOIN estaciones_inventario e ON sq.estacion_id = e.id
+                        WHERE (%s = 'TODOS' OR e.nombre ILIKE %s OR sq.estacion_id ILIKE %s);
+                    """, (nombre_estacion, f"%{nombre_estacion}%", f"%{nombre_estacion}%"))
+                    for r in cur.fetchall():
+                        resultados.append({
+                            "id": r["id"],
+                            "nombre": r["nombre"],
+                            "categoria": r["categoria"],
+                            "litros_disponibles": float(r["litros_disponibles"]),
+                            "estacion": r["estacion"]
+                        })
+
+                # 2. Consultar Kits EPP en PostgreSQL
+                if cat_upper in ["EPP", "TODOS"]:
+                    cur.execute("""
+                        SELECT k.codigo as id, 'Equipo ERA Autónomo' as nombre, 'EPP' as categoria,
+                               k.presion_oxigeno_bares, k.estado, COALESCE(e.nombre, k.estacion_id) as estacion
+                        FROM kits_epp k
+                        LEFT JOIN estaciones_inventario e ON k.estacion_id = e.id
+                        WHERE (%s = 'TODOS' OR e.nombre ILIKE %s OR k.estacion_id ILIKE %s);
+                    """, (nombre_estacion, f"%{nombre_estacion}%", f"%{nombre_estacion}%"))
+                    for r in cur.fetchall():
+                        resultados.append({
+                            "id": r["id"],
+                            "nombre": f"{r['nombre']} ({r['presion_oxigeno_bares']} Bares)",
+                            "categoria": r["categoria"],
+                            "presion_oxigeno_bares": r["presion_oxigeno_bares"],
+                            "estado": r["estado"],
+                            "estacion": r["estacion"]
+                        })
+
+                # 3. Consultar Herramientas en PostgreSQL
+                if cat_upper in ["HERRAMIENTA", "MATERIAL", "TODOS"]:
+                    cur.execute("""
+                        SELECT h.codigo as id, h.nombre, 'HERRAMIENTA' as categoria,
+                               h.horas_uso, h.estado, COALESCE(e.nombre, h.estacion_id) as estacion
+                        FROM herramientas_equipos h
+                        LEFT JOIN estaciones_inventario e ON h.estacion_id = e.id
+                        WHERE (%s = 'TODOS' OR e.nombre ILIKE %s OR h.estacion_id ILIKE %s);
+                    """, (nombre_estacion, f"%{nombre_estacion}%", f"%{nombre_estacion}%"))
+                    for r in cur.fetchall():
+                        resultados.append({
+                            "id": r["id"],
+                            "nombre": r["nombre"],
+                            "categoria": r["categoria"],
+                            "horas_uso": float(r["horas_uso"]),
+                            "estado": r["estado"],
+                            "estacion": r["estacion"]
+                        })
+
+                if resultados:
+                    return resultados
+        except Exception as e:
+            logger.error(f"[MCP-STOCK] Error al consultar PostgreSQL: {e}")
+        finally:
+            conn.close()
+
+    # Fallback de respaldo en memoria si la BD PostgreSQL estuviera desconectada
     est_lower = nombre_estacion.lower()
     return [
         i for i in BASE_DATOS_SOLO_LECTURA_MOCK["insumos"]
-        if est_lower in i["estacion"].lower() and (cat_upper in i["categoria"] or cat_upper == "TODOS")
+        if (est_lower == "todos" or est_lower in i["estacion"].lower()) and (cat_upper in i["categoria"] or cat_upper == "TODOS")
     ]
 
 
@@ -159,7 +267,7 @@ def consultar_camiones_disponibles(cuadrante: str = "TODOS") -> List[Dict[str, A
 def ejecutar_consulta_analitica_segura(consulta_sql: str) -> Dict[str, Any]:
     """
     Herramienta MCP: Valida sintácticamente mediante AST (sqlglot) y ejecuta
-    la consulta en modo estricto de solo lectura.
+    la consulta en PostgreSQL real en modo estricto de solo lectura.
     """
     validacion = validar_consulta_ast(consulta_sql)
 
@@ -172,14 +280,40 @@ def ejecutar_consulta_analitica_segura(consulta_sql: str) -> Dict[str, Any]:
             "transaccion": "ABORTADA_DEFENSIVAMENTE"
         }
 
-    # Si pasa el AST, se simula la ejecución con transacción forzada READ ONLY
-    sql_upper = consulta_sql.upper()
-    tabla_detectada = validacion.tablas_detectadas[0] if validacion.tablas_detectadas else "hidrantes"
+    # Intentar ejecutar en PostgreSQL real con mcp_readonly_user
+    conn = obtener_conexion_mcp_readonly()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Transacción forzada de solo lectura a nivel de sesión
+                cur.execute(ASTValidator.forzar_transaccion_solo_lectura())
+                cur.execute(validacion.sql_sanitizado)
+                filas = cur.fetchall()
+                datos = [dict(f) for f in filas]
 
+                return {
+                    "exito": True,
+                    "origen": "POSTGRESQL_REAL (puerto 5435)",
+                    "usuario_bd": "mcp_readonly_user",
+                    "transaccion": "SET TRANSACTION READ ONLY;",
+                    "tablas_consultadas": validacion.tablas_detectadas,
+                    "filas_retornadas": len(datos),
+                    "datos": datos,
+                    "sql_ejecutado": validacion.sql_sanitizado
+                }
+        except Exception as e:
+            logger.warning(f"[MCP-AST] Error ejecutando SQL en PostgreSQL real: {e}")
+        finally:
+            conn.close()
+
+    # Fallback con base simulada si la BD estuviera desconectada
+    tabla_detectada = validacion.tablas_detectadas[0] if validacion.tablas_detectadas else "hidrantes"
     datos_retorno = BASE_DATOS_SOLO_LECTURA_MOCK.get(tabla_detectada, [])
 
     return {
         "exito": True,
+        "origen": "BASE_SIMULADA_FALLBACK",
+        "usuario_bd": "mcp_readonly_user",
         "transaccion": ASTValidator.forzar_transaccion_solo_lectura(),
         "tablas_consultadas": validacion.tablas_detectadas,
         "filas_retornadas": len(datos_retorno),
@@ -196,7 +330,7 @@ CATALOGO_HERRAMIENTAS_MCP = [
     },
     {
         "nombre": "consultar_stock_estacion",
-        "descripcion": "Consulta stock de insumos críticos (EPP, espumógeno, mangueras) por estación.",
+        "descripcion": "Consulta stock de insumos críticos (EPP, espumógeno, mangueras) por estación en PostgreSQL real.",
         "parametros": StockInput.model_json_schema(),
     },
     {
@@ -206,7 +340,7 @@ CATALOGO_HERRAMIENTAS_MCP = [
     },
     {
         "nombre": "ejecutar_consulta_analitica_segura",
-        "descripcion": "Ejecuta consultas SQL analíticas dinámicas validadas por el parser AST con sqlglot.",
+        "descripcion": "Ejecuta consultas SQL analíticas dinámicas validadas por el parser AST con sqlglot contra PostgreSQL real.",
         "parametros": ConsultaAnaliticaInput.model_json_schema(),
     },
 ]
