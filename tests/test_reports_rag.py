@@ -11,10 +11,10 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 import openpyxl
 
-from services.reports_rag.rag_engine import RAGEngine, ReporteParametros
+from services.reports_rag.rag_engine import RAGEngine, ReporteParametros, CATALOGO_ESQUEMAS_TABLAS
 from services.reports_rag.multimodal_generator import MultimodalGenerator
 from services.reports_rag.whisper_service import WhisperService
-from services.reports_rag.reports_service import ReportsService
+from services.reports_rag.reports_service import ReportsService, ReporteDinamicoRequest
 from services.security import crear_token_prueba, COOKIE_NAME
 from api.main_ia import app_ia
 
@@ -243,22 +243,40 @@ async def test_api_reportes_token_expirado_retorna_401():
 
 
 @pytest.mark.asyncio
-async def test_api_reportes_rol_bombero_retorna_403():
+async def test_api_reportes_rol_no_autorizado_retorna_403():
     """
-    Control RBAC: Rol 'BOMBERO' tiene prohibido emitir reportes tácticos de comando.
+    Control RBAC: Roles no autorizados (ej. 'CIUDADANO') tienen prohibido emitir reportes tácticos.
     Debe retornar HTTP 403 Forbidden.
+    """
+    token_ciudadano = crear_token_prueba(rol="CIUDADANO")
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": f"Bearer {token_ciudadano}"}
+        resp = await client.post(
+            "/api/v1/reportes/generar-por-texto",
+            json={"instruccion": "Intento de ciudadano de emitir reporte", "generar_multimodal": False},
+            headers=headers
+        )
+        assert resp.status_code == 403
+        assert "Acceso denegado" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_rol_bombero_permitido():
+    """
+    Control RBAC: Rol 'BOMBERO' tiene autorización para consultar esquemas y emitir reportes.
+    Debe retornar HTTP 200 OK.
     """
     token_bombero = crear_token_prueba(rol="BOMBERO")
     transport = ASGITransport(app=app_ia)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         headers = {"Authorization": f"Bearer {token_bombero}"}
-        resp = await client.post(
-            "/api/v1/reportes/generar-por-texto",
-            json={"instruccion": "Intento de bombero de emitir reporte", "generar_multimodal": False},
+        resp = await client.get(
+            "/api/v1/reportes/esquemas-tablas",
             headers=headers
         )
-        assert resp.status_code == 403
-        assert "Acceso denegado" in resp.json()["detail"]
+        assert resp.status_code == 200
+        assert "tablas" in resp.json()
 
 
 @pytest.mark.asyncio
@@ -330,3 +348,243 @@ async def test_api_mcp_ejecutar_sql_seguro_y_herramientas():
         assert resp_tool.status_code == 200
         assert resp_tool.json()["exito"] is True
         assert len(resp_tool.json()["resultados"]) >= 1
+
+
+# =========================================================================
+# PRUEBAS DEL MÓDULO DE REPORTES DINÁMICOS (INF512 - EXAMEN)
+# Requisito ⑤ y Pregunta #4
+# =========================================================================
+
+def test_rag_catalogo_esquemas_tablas():
+    """Verifica que el catálogo de tablas para el frontend contenga los 4 dominios requeridos."""
+    assert "siniestros" in CATALOGO_ESQUEMAS_TABLAS
+    assert "flota" in CATALOGO_ESQUEMAS_TABLAS
+    assert "hidrantes" in CATALOGO_ESQUEMAS_TABLAS
+    assert "insumos" in CATALOGO_ESQUEMAS_TABLAS
+
+    # Validar campos de siniestros
+    cols_siniestros = [c["id"] for c in CATALOGO_ESQUEMAS_TABLAS["siniestros"]["columnas"]]
+    assert "codigo" in cols_siniestros
+    assert "tipo" in cols_siniestros
+    assert "severidad" in cols_siniestros
+    assert "zona" in cols_siniestros
+    assert "agua_usada" in cols_siniestros
+
+    # Validar tipos y totalizabilidad
+    col_agua = next(c for c in CATALOGO_ESQUEMAS_TABLAS["siniestros"]["columnas"] if c["id"] == "agua_usada")
+    assert col_agua["tipo"] == "number"
+    assert col_agua["es_totalizable"] is True
+
+
+def test_rag_extraccion_especificacion_reporte_dinamico_prompt_examen(rag):
+    """
+    Prueba el caso explícito de examen INF512:
+    'columnas código, tipo, zona, agua usada; criterios: cuadrante Norte, severidad alta, formato Excel'
+    """
+    prompt = "columnas código, tipo, zona, agua usada; criterios: cuadrante Norte, severidad alta, formato Excel"
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+
+    assert res["fuente_datos"] == "siniestros"
+    assert res["formato"] == "EXCEL"
+    assert "codigo" in res["columnas"]
+    assert "tipo" in res["columnas"]
+    assert "zona" in res["columnas"]
+    assert "agua_usada" in res["columnas"]
+    assert res["criterios"]["cuadrante"] == "NORTE"
+    assert res["criterios"]["severidad"] == "ALTA"
+
+
+def test_rag_extraccion_especificacion_flota_dinamica(rag):
+    """Prueba la extracción inteligente con la entidad Flota y formato PDF."""
+    prompt = "Generar reporte de la flota con columnas placa, capacidad max, agua actual; criterios: cuadrante Centro, formato PDF"
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+
+    assert res["fuente_datos"] == "flota"
+    assert res["formato"] == "PDF"
+    assert "placa" in res["columnas"]
+    assert "capacidad_max" in res["columnas"]
+    assert "agua_actual" in res["columnas"]
+    assert res["criterios"]["cuadrante"] == "CENTRO"
+
+
+def test_rag_filtrado_y_totales_zero_hallucinations(rag):
+    """
+    Verifica que el filtrado y el cálculo de totales sea determinista y exacto.
+    INC-2026-SCZ-004 tiene cuadrante NORTE, severidad ALTA, agua_usada=6200.
+    """
+    criterios = {"cuadrante": "NORTE", "severidad": "ALTA"}
+    filtrados = rag.filtrar_datos_tabla("siniestros", criterios)
+    assert len(filtrados) == 1
+    assert filtrados[0]["codigo"] == "INC-2026-SCZ-004"
+
+    totales = rag.calcular_totales_columnas("siniestros", ["codigo", "zona", "agua_usada"], filtrados)
+    assert totales["agua_usada"] == 6200
+
+
+def test_generador_pdf_dinamico_weasyprint(rag, generator):
+    """Verifica compilación de PDF dinámico con encabezados institucionales #CE2029."""
+    criterios = {"cuadrante": "NORTE"}
+    filtrados = rag.filtrar_datos_tabla("flota", criterios)
+    totales = rag.calcular_totales_columnas("flota", ["placa", "capacidad_max", "agua_actual"], filtrados)
+
+    datos = rag.sintetizar_markdown_dinamico(
+        id_reporte="REP-DIN-PDF-01",
+        fuente_datos="flota",
+        columnas=["placa", "capacidad_max", "agua_actual", "estado"],
+        criterios=criterios,
+        registros=filtrados,
+        totales=totales,
+        instruccion_prompt="Flota Cuadrante Norte"
+    )
+
+    pdf_bytes = generator.generar_pdf_dinamico(datos)
+    assert isinstance(pdf_bytes, bytes)
+    assert len(pdf_bytes) > 5000
+    assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_generador_excel_dinamico_openpyxl(rag, generator):
+    """Verifica compilación de Excel dinámico con encabezados #CE2029 y fórmula =SUM(...)."""
+    criterios = {"cuadrante": "NORTE"}
+    filtrados = rag.filtrar_datos_tabla("flota", criterios)
+    totales = rag.calcular_totales_columnas("flota", ["placa", "capacidad_max", "agua_actual"], filtrados)
+
+    datos = rag.sintetizar_markdown_dinamico(
+        id_reporte="REP-DIN-XLS-01",
+        fuente_datos="flota",
+        columnas=["placa", "capacidad_max", "agua_actual", "estado"],
+        criterios=criterios,
+        registros=filtrados,
+        totales=totales
+    )
+
+    excel_bytes = generator.generar_excel_dinamico(datos)
+    assert isinstance(excel_bytes, bytes)
+    assert len(excel_bytes) > 2000
+
+    wb = openpyxl.load_workbook(io.BytesIO(excel_bytes), data_only=False)
+    ws = wb.active
+    # Verificar existencia de la fórmula de autosuma
+    encontro_sum = False
+    for row in ws.iter_rows(values_only=True):
+        for cell_val in row:
+            if isinstance(cell_val, str) and cell_val.startswith("=SUM"):
+                encontro_sum = True
+                break
+    assert encontro_sum is True, "El reporte dinámico en Excel debe incluir la fórmula =SUM(...) en la fila de totales."
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_esquemas_tablas():
+    """Verifica que el endpoint GET /api/v1/reportes/esquemas-tablas responda el catálogo con SSO."""
+    token_operador = crear_token_prueba(rol="OPERADOR")
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Con autenticación
+        headers = {"Authorization": f"Bearer {token_operador}"}
+        resp = await client.get("/api/v1/reportes/esquemas-tablas", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tablas" in data
+        assert "fuentes_disponibles" in data
+        assert "siniestros" in data["fuentes_disponibles"]
+        assert "flota" in data["fuentes_disponibles"]
+
+        # 2. Sin autenticación -> HTTP 401
+        resp_anon = await client.get("/api/v1/reportes/esquemas-tablas")
+        assert resp_anon.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_api_generar_reporte_dinamico_payload_completo():
+    """Prueba generación de reporte dinámico vía POST /api/v1/reportes/generar-dinamico."""
+    token_operador = crear_token_prueba(rol="OPERADOR")
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        payload = {
+            "fuente_datos": "siniestros",
+            "columnas": ["codigo", "zona", "agua_usada", "estado"],
+            "criterios": {"cuadrante": "NORTE", "severidad": "CRITICA"},
+            "formato": "AMBOS"
+        }
+        headers = {"Authorization": f"Bearer {token_operador}"}
+        resp = await client.post("/api/v1/reportes/generar-dinamico", json=payload, headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["id_reporte"].startswith("REP-DIN-")
+        assert data["fuente_datos"] == "siniestros"
+        assert data["columnas"] == ["codigo", "zona", "agua_usada", "estado"]
+        assert data["total_registros"] >= 1
+        assert "agua_usada" in data["totales_calculados"]
+        assert data["pdf_url"] is not None
+        assert data["excel_url"] is not None
+
+        # Verificar descarga de PDF
+        pdf_resp = await client.get(data["pdf_url"], headers=headers)
+        assert pdf_resp.status_code == 200
+        assert pdf_resp.headers["content-type"] == "application/pdf"
+
+        # Verificar descarga de Excel
+        excel_resp = await client.get(data["excel_url"], headers=headers)
+        assert excel_resp.status_code == 200
+        assert "spreadsheetml" in excel_resp.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_api_generar_reporte_dinamico_con_prompt_texto():
+    """
+    Prueba generación de reporte dinámico interpretando el prompt en lenguaje natural
+    del requerimiento de examen.
+    """
+    token_operador = crear_token_prueba(rol="OPERADOR")
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        payload = {
+            "instruccion_prompt": "columnas código, tipo, zona, agua usada; criterios: cuadrante Norte, severidad alta, formato Excel"
+        }
+        headers = {"Authorization": f"Bearer {token_operador}"}
+        resp = await client.post("/api/v1/reportes/generar-dinamico", json=payload, headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["id_reporte"].startswith("REP-DIN-")
+        assert data["fuente_datos"] == "siniestros"
+        assert "agua_usada" in data["columnas"]
+        assert data["formato"] == "EXCEL"
+        assert data["excel_url"] is not None
+        assert data["criterios_aplicados"]["cuadrante"] == "NORTE"
+        assert data["criterios_aplicados"]["severidad"] == "ALTA"
+        assert data["total_registros"] == 1
+        assert data["totales_calculados"]["agua_usada"] == 6200
+
+
+@pytest.mark.asyncio
+async def test_api_generar_reporte_dinamico_voz():
+    """
+    Prueba generación de reporte dinámico desde archivo de audio WAV con SSO.
+    """
+    import wave
+    token_operador = crear_token_prueba(rol="OPERADOR")
+    transport = ASGITransport(app=app_ia)
+
+    # Generar un archivo WAV sintético en memoria
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b'\x00\x00' * 1600)
+    wav_bytes = buf.getvalue()
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        files = {"archivo_audio": ("comando_voz.wav", wav_bytes, "audio/wav")}
+        headers = {"Authorization": f"Bearer {token_operador}"}
+        resp = await client.post("/api/v1/reportes/generar-dinamico-voz", files=files, headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id_reporte"].startswith("REP-DIN-")
+        assert "columnas" in data
+        assert data["total_registros"] >= 0
+
+

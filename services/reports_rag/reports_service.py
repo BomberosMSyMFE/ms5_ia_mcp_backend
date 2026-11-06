@@ -32,6 +32,42 @@ class GenerarReporteTextoRequest(BaseModel):
     voz_tts: str = "es-BO-MarceloNeural"
 
 
+class ReporteDinamicoRequest(BaseModel):
+    """
+    Solicitud para generación de reportes dinámicos.
+    Requisitos INF512 - Examen Rolando Martínez Canedo.
+    """
+    fuente_datos: Optional[str] = None  # "siniestros" | "flota" | "hidrantes" | "insumos" (infiere si hay prompt)
+    columnas: Optional[list[str]] = None  # ej: ["codigo", "zona", "agua_usada", "estado"]
+    criterios: Optional[Dict[str, Any]] = None  # ej: {"cuadrante": "NORTE", "severidad": "CRITICA"}
+    formato: Optional[str] = None  # "PDF" | "EXCEL" | "AMBOS" (infiere si hay prompt, default AMBOS)
+    instruccion_prompt: Optional[str] = None  # Opcional si se emitió por texto/voz
+    voz_tts: Optional[str] = "es-BO-MarceloNeural"
+
+
+class ReporteDinamicoRespuestaDTO(BaseModel):
+    """
+    Respuesta estructurada para reporte dinámico multimodal.
+    """
+    id_reporte: str
+    fecha_emision: str
+    fuente_datos: str
+    columnas: list[str]
+    criterios_aplicados: Dict[str, Any]
+    total_registros: int
+    formato: str
+    instruccion_prompt: Optional[str] = None
+    totales_calculados: Dict[str, Any]
+    registros: list[Dict[str, Any]]
+    resumen_radial: str
+    markdown_url: str
+    pdf_url: Optional[str] = None
+    excel_url: Optional[str] = None
+    audio_url: Optional[str] = None
+    duracion_proceso_ms: float
+    etapas_completadas: list[str]
+
+
 class ReporteRespuestaDTO(BaseModel):
     id_reporte: str
     fecha_emision: str
@@ -247,6 +283,183 @@ class ReportsService:
             with open(ruta, "r", encoding="utf-8") as f:
                 return f.read()
         return None
+
+    # =========================================================================
+    # PIPELINE DE REPORTES DINÁMICOS MULTIMODALES (INF512)
+    # =========================================================================
+
+    def obtener_esquemas_tablas(self) -> Dict[str, Any]:
+        """Devuelve el catálogo de tablas y campos disponibles para el constructor dinámico."""
+        from services.reports_rag.rag_engine import CATALOGO_ESQUEMAS_TABLAS
+        return {
+            "tablas": CATALOGO_ESQUEMAS_TABLAS,
+            "fuentes_disponibles": list(CATALOGO_ESQUEMAS_TABLAS.keys()),
+            "formatos_disponibles": ["PDF", "EXCEL", "AMBOS"]
+        }
+
+    async def procesar_reporte_dinamico(
+        self,
+        request: ReporteDinamicoRequest
+    ) -> ReporteDinamicoRespuestaDTO:
+        """
+        Orquesta la generación de un reporte dinámico:
+        1. Extracción inteligente de prompt (si aplica).
+        2. Filtrado determinista en Python.
+        3. Cálculo de sumas y totales automáticos.
+        4. Compilación de Markdown, PDF WeasyPrint, Excel OpenPyXL y Audio Edge-TTS.
+        """
+        inicio = datetime.datetime.now()
+        etapas = []
+
+        fuente = request.fuente_datos
+        columnas = list(request.columnas) if request.columnas else []
+        criterios = dict(request.criterios) if request.criterios else {}
+        formato = request.formato.upper() if request.formato else None
+        prompt = request.instruccion_prompt
+
+        # 1. Extracción inteligente si se proporcionó un prompt
+        if prompt and prompt.strip():
+            ext = self.rag.extraer_especificacion_reporte_dinamico(
+                texto_prompt=prompt.strip(),
+                fuente_datos_hint=request.fuente_datos
+            )
+            if not fuente:
+                fuente = ext["fuente_datos"]
+            if not columnas:
+                columnas = ext["columnas"]
+            if not criterios:
+                criterios = ext["criterios"]
+            elif ext["criterios"]:
+                criterios = {**ext["criterios"], **criterios}
+            if not formato:
+                formato = ext["formato"]
+            etapas.append("1. Extracción Inteligente de Especificación Semántica (RAG Parser)")
+        else:
+            etapas.append("1. Ingesta de Parámetros Estructurados de Reporte Dinámico")
+
+        fuente = fuente or "siniestros"
+        formato = formato or "AMBOS"
+
+        from services.reports_rag.rag_engine import CATALOGO_ESQUEMAS_TABLAS
+        if fuente not in CATALOGO_ESQUEMAS_TABLAS:
+            fuente = "siniestros"
+
+        if not columnas:
+            columnas = [c["id"] for c in CATALOGO_ESQUEMAS_TABLAS[fuente]["columnas"]]
+
+        # 2. Filtrado determinista de datos
+        registros = self.rag.filtrar_datos_tabla(fuente, criterios)
+        etapas.append(f"2. Filtrado Determinista de Registros ({len(registros)} registros recuperados)")
+
+        # 3. Cálculo matemático de totales y agregaciones
+        totales = self.rag.calcular_totales_columnas(fuente, columnas, registros)
+        etapas.append("3. Cálculo Determinista de Totales y Sumas Automáticas")
+
+        # 4. Generación de identificador único de reporte
+        timestamp_slug = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        uuid_short = uuid.uuid4().hex[:6].upper()
+        id_reporte = f"REP-DIN-{timestamp_slug}-{uuid_short}"
+        report_dir = os.path.join(self.output_dir, id_reporte)
+        os.makedirs(report_dir, exist_ok=True)
+
+        # 5. Síntesis de Markdown y Briefing Radial
+        datos_sint = self.rag.sintetizar_markdown_dinamico(
+            id_reporte=id_reporte,
+            fuente_datos=fuente,
+            columnas=columnas,
+            criterios=criterios,
+            registros=registros,
+            totales=totales,
+            instruccion_prompt=prompt
+        )
+        md_path = os.path.join(report_dir, "reporte.md")
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(datos_sint["markdown"])
+        etapas.append("4. Síntesis Editorial en Markdown y Briefing Radial")
+
+        # 6. Compilación Multimodal
+        pdf_url = None
+        excel_url = None
+        audio_url = None
+
+        if formato in ("PDF", "AMBOS"):
+            try:
+                pdf_bytes = self.generator.generar_pdf_dinamico(datos_sint)
+                pdf_path = os.path.join(report_dir, "reporte.pdf")
+                with open(pdf_path, "wb") as f:
+                    f.write(pdf_bytes)
+                pdf_url = f"/api/v1/reportes/descargar/pdf/{id_reporte}"
+            except Exception as e:
+                logger.error(f"Error generando PDF dinámico: {e}")
+
+        if formato in ("EXCEL", "AMBOS"):
+            try:
+                xlsx_bytes = self.generator.generar_excel_dinamico(datos_sint)
+                xlsx_path = os.path.join(report_dir, "reporte.xlsx")
+                with open(xlsx_path, "wb") as f:
+                    f.write(xlsx_bytes)
+                excel_url = f"/api/v1/reportes/descargar/excel/{id_reporte}"
+            except Exception as e:
+                logger.error(f"Error generando Excel dinámico: {e}")
+
+        try:
+            audio_bytes = await self.generator.generar_audio_tts(
+                texto_briefing=datos_sint["resumen_radial"],
+                voice=request.voz_tts or "es-BO-MarceloNeural"
+            )
+            if audio_bytes:
+                audio_path = os.path.join(report_dir, "briefing.mp3")
+                with open(audio_path, "wb") as f:
+                    f.write(audio_bytes)
+                audio_url = f"/api/v1/reportes/reproducir/audio/{id_reporte}"
+        except Exception as e:
+            logger.error(f"Error generando audio TTS dinámico: {e}")
+
+        etapas.append("5. Compilación Multimodal de Salidas (PDF, Excel, MP3)")
+
+        fin = datetime.datetime.now()
+        duracion_ms = round((fin - inicio).total_seconds() * 1000, 2)
+
+        return ReporteDinamicoRespuestaDTO(
+            id_reporte=id_reporte,
+            fecha_emision=datos_sint["fecha_emision"],
+            fuente_datos=fuente,
+            columnas=columnas,
+            criterios_aplicados=criterios,
+            total_registros=len(registros),
+            formato=formato,
+            instruccion_prompt=prompt,
+            totales_calculados=totales,
+            registros=registros,
+            resumen_radial=datos_sint["resumen_radial"],
+            markdown_url=f"/api/v1/reportes/{id_reporte}",
+            pdf_url=pdf_url,
+            excel_url=excel_url,
+            audio_url=audio_url,
+            duracion_proceso_ms=duracion_ms,
+            etapas_completadas=etapas
+        )
+
+    async def procesar_reporte_dinamico_voz(
+        self,
+        audio_bytes: bytes,
+        extension: str = "wav",
+        voz_tts: str = "es-BO-MarceloNeural"
+    ) -> ReporteDinamicoRespuestaDTO:
+        """
+        Genera reporte dinámico a partir de nota de voz (ASR Faster-Whisper + RAG Dinámico).
+        """
+        texto_transcrito = self.whisper.transcribir_audio_bytes(audio_bytes, extension=extension)
+        if not texto_transcrito:
+            texto_transcrito = "Generar reporte dinámico de situación general"
+
+        req = ReporteDinamicoRequest(
+            instruccion_prompt=texto_transcrito,
+            voz_tts=voz_tts
+        )
+        res = await self.procesar_reporte_dinamico(req)
+        res.etapas_completadas.insert(0, "0. Transcripción Acústica por Voz (Faster-Whisper)")
+        return res
 
 
 reports_service_default = ReportsService()

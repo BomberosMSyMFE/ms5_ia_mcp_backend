@@ -727,6 +727,434 @@ class MultimodalGenerator:
         wb.save(buf)
         return buf.getvalue()
 
+    # =========================================================================
+    # GENERADORES MULTIMODALES PARA REPORTES DINÁMICOS (INF512)
+    # Encabezados institucionales (#CE2029) y filas de totales automáticas
+    # =========================================================================
+
+    def generar_pdf_dinamico(self, datos_reporte_dinamico: Dict[str, Any]) -> bytes:
+        """
+        Compila un reporte con columnas dinámicas seleccionadas y datos filtrados
+        utilizando WeasyPrint y CSS Paged Media con encabezados institucionales (#CE2029)
+        y fila de totales automáticas.
+        """
+        id_reporte = datos_reporte_dinamico.get("id_reporte", "REP-DIN-001")
+        fuente_datos = datos_reporte_dinamico.get("fuente_datos", "siniestros")
+        fecha = datos_reporte_dinamico.get("fecha_emision", "2026-11-05 08:00:00")
+        columnas = datos_reporte_dinamico.get("columnas", [])
+        registros = datos_reporte_dinamico.get("registros", [])
+        criterios = datos_reporte_dinamico.get("criterios", {})
+        totales = datos_reporte_dinamico.get("totales", {})
+        prompt = datos_reporte_dinamico.get("instruccion_prompt", "")
+        resumen_radial = datos_reporte_dinamico.get("resumen_radial", "")
+
+        from services.reports_rag.rag_engine import CATALOGO_ESQUEMAS_TABLAS
+        esquema = CATALOGO_ESQUEMAS_TABLAS.get(fuente_datos, {})
+        nombre_tabla = esquema.get("nombre_legible", fuente_datos.capitalize())
+        meta_cols = {c["id"]: c for c in esquema.get("columnas", [])}
+
+        # Generar etiquetas de cabecera HTML
+        th_html = ""
+        for col_id in columnas:
+            meta = meta_cols.get(col_id, {})
+            label = meta.get("label", col_id.upper())
+            tipo = meta.get("tipo", "string")
+            align = "text-right" if tipo == "number" else ("text-center" if col_id in ["estado", "severidad", "cuadrante"] else "text-left")
+            th_html += f'<th class="{align}">{label}</th>'
+
+        # Generar filas de datos HTML
+        tbody_html = ""
+        for reg in registros:
+            td_html = ""
+            for col_id in columnas:
+                val = reg.get(col_id, "")
+                meta = meta_cols.get(col_id, {})
+                tipo = meta.get("tipo", "string")
+                if col_id in ["estado", "severidad"]:
+                    val_str = str(val)
+                    if val_str in ["OPERATIVO", "DISPONIBLE", "CONTROLADO", "BAJA"]:
+                        badge = f'<span class="badge-success">{val_str}</span>'
+                    elif val_str in ["CRITICA", "FUERA_DE_SERVICIO", "EN_COMBATE"]:
+                        badge = f'<span class="badge-danger">{val_str}</span>'
+                    else:
+                        badge = f'<span class="badge-warning">{val_str}</span>'
+                    td_html += f'<td class="text-center">{badge}</td>'
+                elif tipo == "number" and isinstance(val, (int, float)):
+                    td_html += f'<td class="text-right font-mono">{val:,}</td>'.replace(",", ".")
+                else:
+                    td_html += f'<td>{val}</td>'
+            tbody_html += f'<tr>{td_html}</tr>\n'
+
+        if not registros:
+            tbody_html = f'<tr><td colspan="{len(columnas)}" class="text-center" style="padding:15px; color:#888;">No se encontraron registros que cumplan con los criterios especificados.</td></tr>'
+
+        # Fila de totales HTML si aplica
+        tfoot_html = ""
+        if totales and registros:
+            td_totales = ""
+            primera = True
+            for col_id in columnas:
+                if col_id in totales:
+                    val_tot = totales[col_id]
+                    meta = meta_cols.get(col_id, {})
+                    unidad = meta.get("unidad", "")
+                    u_str = f" {unidad}" if unidad else ""
+                    td_totales += f'<td class="text-right font-mono font-bold">{val_tot:,}{u_str}</td>'.replace(",", ".")
+                elif primera:
+                    td_totales += '<td class="font-bold">TOTALES</td>'
+                    primera = False
+                else:
+                    td_totales += '<td>-</td>'
+            tfoot_html = f"""
+            <tfoot>
+                <tr class="total-row">
+                    {td_totales}
+                </tr>
+            </tfoot>
+            """
+
+        criterios_desc = ", ".join([f"<strong>{k}:</strong> {v}" for k, v in criterios.items()]) if criterios else "Ninguno (Catálogo completo)"
+        prompt_html = f'<div class="meta-row"><strong>Prompt de Origen:</strong> <em>"{prompt}"</em></div>' if prompt else ""
+
+        html_content = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Reporte Dinámico - {id_reporte}</title>
+    <style>
+        @page {{
+            size: A4;
+            margin: 15mm 12mm 15mm 12mm;
+            @top-right {{
+                content: "USO OFICIAL TÁCTICO — REPORTE DINÁMICO BOMBEROS";
+                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                font-size: 7.5pt;
+                font-weight: bold;
+                color: #CE2029;
+                letter-spacing: 0.5px;
+            }}
+            @bottom-left {{
+                content: "MS-05 IA CORE — GENERADOR MULTIMODAL DINÁMICO";
+                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                font-size: 7pt;
+                color: #777777;
+            }}
+            @bottom-right {{
+                content: "Página " counter(page) " de " counter(pages);
+                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                font-size: 7.5pt;
+                font-weight: bold;
+                color: #444444;
+            }}
+        }}
+
+        body {{
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            color: #222222;
+            margin: 0;
+            padding: 0;
+            font-size: 9pt;
+            line-height: 1.35;
+        }}
+
+        .header-container {{
+            border-bottom: 2.5px solid #CE2029;
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+        }}
+
+        .org-name {{
+            color: #CE2029;
+            font-size: 13pt;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 0;
+        }}
+
+        .report-title {{
+            font-size: 12pt;
+            color: #111827;
+            margin: 3px 0 6px 0;
+            font-weight: 700;
+        }}
+
+        .meta-box {{
+            background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 4px;
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            font-size: 8.5pt;
+        }}
+
+        .meta-row {{
+            margin-bottom: 3px;
+        }}
+
+        .badge-id {{
+            background-color: #CE2029;
+            color: #FFFFFF;
+            padding: 2px 7px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-weight: bold;
+            font-size: 8pt;
+            display: inline-block;
+        }}
+
+        .callout-box {{
+            background-color: #FFF5F5;
+            border-left: 3.5px solid #CE2029;
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            border-radius: 0 4px 4px 0;
+        }}
+
+        .callout-title {{
+            font-size: 8pt;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: #CE2029;
+            margin-bottom: 3px;
+        }}
+
+        .callout-text {{
+            font-size: 8.5pt;
+            color: #4A1517;
+            font-style: italic;
+            margin: 0;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 8.5pt;
+        }}
+
+        th {{
+            background-color: #CE2029;
+            color: #FFFFFF;
+            font-weight: bold;
+            padding: 6px 8px;
+            font-size: 8pt;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            border: 1px solid #CE2029;
+        }}
+
+        td {{
+            padding: 5px 8px;
+            border-bottom: 1px solid #E2E8F0;
+            color: #334155;
+        }}
+
+        tr:nth-child(even) td {{
+            background-color: #F8FAFC;
+        }}
+
+        .total-row td {{
+            background-color: #FDE8E8 !important;
+            border-top: 2.5px solid #CE2029 !important;
+            border-bottom: 2.5px solid #CE2029 !important;
+            color: #111827 !important;
+        }}
+
+        .font-mono {{ font-family: monospace; }}
+        .font-bold {{ font-weight: bold; }}
+        .text-right {{ text-align: right; }}
+        .text-center {{ text-align: center; }}
+        .text-left {{ text-align: left; }}
+
+        .badge-success {{ background-color: #DEF7EC; color: #03543F; padding: 2px 5px; border-radius: 3px; font-size: 7pt; font-weight: bold; }}
+        .badge-danger {{ background-color: #FDE8E8; color: #9B1C1C; padding: 2px 5px; border-radius: 3px; font-size: 7pt; font-weight: bold; }}
+        .badge-warning {{ background-color: #FEF08A; color: #854D0E; padding: 2px 5px; border-radius: 3px; font-size: 7pt; font-weight: bold; }}
+
+        .signature-section {{
+            margin-top: 25px;
+            page-break-inside: avoid;
+        }}
+        .signature-box {{
+            float: left;
+            width: 45%;
+            text-align: center;
+            border-top: 1px solid #475569;
+            padding-top: 6px;
+        }}
+        .signature-box:last-child {{
+            float: right;
+        }}
+        .signer-name {{ font-weight: bold; font-size: 8.5pt; color: #0F172A; }}
+        .signer-title {{ font-size: 7.5pt; color: #64748B; }}
+        .clearfix::after {{ content: ""; clear: both; display: table; }}
+    </style>
+</head>
+<body>
+    <div class="header-container">
+        <h1 class="org-name">Cuerpo de Bomberos Santa Cruz</h1>
+        <h2 class="report-title">Reporte Dinámico: {nombre_tabla}</h2>
+    </div>
+
+    <div class="meta-box">
+        <div class="meta-row"><strong>Identificador Oficial:</strong> <span class="badge-id">{id_reporte}</span> | <strong>Fecha:</strong> {fecha}</div>
+        <div class="meta-row"><strong>Fuente Consultada:</strong> {nombre_tabla} (<code>{fuente_datos}</code>) | <strong>Registros Recuperados:</strong> {len(registros)}</div>
+        <div class="meta-row"><strong>Criterios de Filtrado:</strong> {criterios_desc}</div>
+        {prompt_html}
+    </div>
+
+    <div class="callout-box">
+        <div class="callout-title">🎙️ Briefing Ejecutivo de Situación (TTS Edge)</div>
+        <p class="callout-text">"{resumen_radial}"</p>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                {th_html}
+            </tr>
+        </thead>
+        <tbody>
+            {tbody_html}
+        </tbody>
+        {tfoot_html}
+    </table>
+
+    <div class="signature-section clearfix">
+        <div class="signature-box">
+            <div class="signer-name">Cap. Nataly Martínez</div>
+            <div class="signer-title">Comandancia de Operaciones y Crisis</div>
+        </div>
+        <div class="signature-box">
+            <div class="signer-name">Sala de Situación</div>
+            <div class="signer-title">Auditoría y Despacho Automatizado</div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+        return weasyprint.HTML(string=html_content).write_pdf()
+
+    def generar_excel_dinamico(self, datos_reporte_dinamico: Dict[str, Any]) -> bytes:
+        """
+        Genera una hoja de cálculo estructurada en OpenPyXL con columnas dinámicas seleccionadas,
+        encabezados institucionales (#CE2029) y fila de fórmulas automáticas de autosuma.
+        """
+        id_reporte = datos_reporte_dinamico.get("id_reporte", "REP-DIN-001")
+        fuente_datos = datos_reporte_dinamico.get("fuente_datos", "siniestros")
+        fecha = datos_reporte_dinamico.get("fecha_emision", "2026-11-05 08:00:00")
+        columnas = datos_reporte_dinamico.get("columnas", [])
+        registros = datos_reporte_dinamico.get("registros", [])
+        criterios = datos_reporte_dinamico.get("criterios", {})
+        totales = datos_reporte_dinamico.get("totales", {})
+
+        from services.reports_rag.rag_engine import CATALOGO_ESQUEMAS_TABLAS
+        esquema = CATALOGO_ESQUEMAS_TABLAS.get(fuente_datos, {})
+        nombre_tabla = esquema.get("nombre_legible", fuente_datos.capitalize())
+        meta_cols = {c["id"]: c for c in esquema.get("columnas", [])}
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = nombre_tabla[:30]
+        ws.views.sheetView[0].showGridLines = True
+
+        # Estilos institucionales Bomberos (#CE2029)
+        COLOR_INSTITUCIONAL = "CE2029"
+        HEADER_FILL = PatternFill(start_color=COLOR_INSTITUCIONAL, end_color=COLOR_INSTITUCIONAL, fill_type="solid")
+        ZEBRA_FILL = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        TOTAL_FILL = PatternFill(start_color="FDE8E8", end_color="FDE8E8", fill_type="solid")
+        WHITE_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        BOLD_FONT = Font(name="Calibri", size=10, bold=True, color="000000")
+        NORMAL_FONT = Font(name="Calibri", size=10, color="000000")
+        TITLE_FONT = Font(name="Calibri", size=13, bold=True, color=COLOR_INSTITUCIONAL)
+        
+        THIN_BORDER = Border(
+            left=Side(style='thin', color='D1D5DB'),
+            right=Side(style='thin', color='D1D5DB'),
+            top=Side(style='thin', color='D1D5DB'),
+            bottom=Side(style='thin', color='D1D5DB')
+        )
+        DOUBLE_BOTTOM = Border(
+            left=Side(style='thin', color='D1D5DB'),
+            right=Side(style='thin', color='D1D5DB'),
+            top=Side(style='thin', color='D1D5DB'),
+            bottom=Side(style='double', color=COLOR_INSTITUCIONAL)
+        )
+
+        # Encabezado institucional
+        ws["A1"] = f"CUERPO DE BOMBEROS SANTA CRUZ — {nombre_tabla.upper()}"
+        ws["A1"].font = TITLE_FONT
+        criterios_str = ", ".join([f"{k}={v}" for k, v in criterios.items()]) if criterios else "Ninguno"
+        ws["A2"] = f"Reporte: {id_reporte} | Fecha: {fecha} | Filtros: {criterios_str} | Total registros: {len(registros)}"
+        ws["A2"].font = Font(name="Calibri", size=9, italic=True, color="4B5563")
+
+        start_r = 4
+        # Escribir encabezados de columna dinámicas
+        for c_idx, col_id in enumerate(columnas, start=1):
+            meta = meta_cols.get(col_id, {})
+            label = meta.get("label", col_id.upper())
+            cell = ws.cell(row=start_r, column=c_idx, value=label)
+            cell.fill = HEADER_FILL
+            cell.font = WHITE_FONT
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = THIN_BORDER
+
+        curr_r = start_r + 1
+        data_start_r = curr_r
+        for reg in registros:
+            for c_idx, col_id in enumerate(columnas, start=1):
+                val = reg.get(col_id, "")
+                meta = meta_cols.get(col_id, {})
+                tipo = meta.get("tipo", "string")
+                cell = ws.cell(row=curr_r, column=c_idx, value=val)
+                cell.font = NORMAL_FONT
+                cell.border = THIN_BORDER
+                if curr_r % 2 == 0:
+                    cell.fill = ZEBRA_FILL
+                if tipo == "number" and isinstance(val, (int, float)):
+                    cell.number_format = '#,##0'
+                    cell.alignment = Alignment(horizontal="right")
+                elif col_id in ["estado", "severidad", "cuadrante"]:
+                    cell.alignment = Alignment(horizontal="center")
+            curr_r += 1
+
+        data_end_r = curr_r - 1
+
+        # Fila de totales con autosuma OpenPyXL
+        if registros and any(col_id in totales for col_id in columnas):
+            total_row = curr_r
+            primera = True
+            for c_idx, col_id in enumerate(columnas, start=1):
+                col_letter = get_column_letter(c_idx)
+                meta = meta_cols.get(col_id, {})
+                tipo = meta.get("tipo", "string")
+                cell = ws.cell(row=total_row, column=c_idx)
+                cell.border = DOUBLE_BOTTOM
+                cell.fill = TOTAL_FILL
+
+                if col_id in totales or (meta.get("es_totalizable") and tipo == "number"):
+                    cell.value = f"=SUM({col_letter}{data_start_r}:{col_letter}{data_end_r})"
+                    cell.font = BOLD_FONT
+                    cell.number_format = '#,##0'
+                    cell.alignment = Alignment(horizontal="right")
+                elif primera:
+                    cell.value = "TOTALES"
+                    cell.font = BOLD_FONT
+                    cell.alignment = Alignment(horizontal="center")
+                    primera = False
+                else:
+                    cell.value = ""
+
+        # Autoajuste de anchos de columnas
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 3, 13)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
     async def generar_audio_tts(self, texto_briefing: str, voice: str = "es-BO-MarceloNeural") -> bytes:
         """
         Genera el audio en formato MP3 con Edge-TTS para lectura por radio.

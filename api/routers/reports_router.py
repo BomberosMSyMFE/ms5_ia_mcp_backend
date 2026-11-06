@@ -16,7 +16,9 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from services.reports_rag.reports_service import (
     reports_service_default,
     GenerarReporteTextoRequest,
-    ReporteRespuestaDTO
+    ReporteRespuestaDTO,
+    ReporteDinamicoRequest,
+    ReporteDinamicoRespuestaDTO
 )
 from services.security import (
     validar_operador_guard,
@@ -33,6 +35,93 @@ reports_router = APIRouter(
 
 EXTENSIONES_AUDIO_VALIDAS = ["wav", "mp3", "m4a", "ogg", "webm", "flac"]
 MAX_AUDIO_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+# =========================================================================
+# ENDPOINTS DE REPORTES DINÁMICOS (INF512 - EXAMEN ROLANDO MARTÍNEZ CANEDO)
+# =========================================================================
+
+@reports_router.get(
+    "/esquemas-tablas",
+    summary="Obtener catálogo de esquemas de tablas para reportes dinámicos",
+    description="Retorna el catálogo de tablas ('siniestros', 'flota', 'hidrantes', 'insumos') y sus columnas con tipos de datos para poblar el selector dinámico del frontend."
+)
+async def obtener_esquemas_tablas(
+    usuario: UsuarioAutenticado = Depends(validar_operador_guard)
+):
+    logger.info(f"[Reportes Dinámicos] Consulta de esquemas autorizada para {usuario.email} ({usuario.rol})")
+    return reports_service_default.obtener_esquemas_tablas()
+
+
+@reports_router.post(
+    "/generar-dinamico",
+    response_model=ReporteDinamicoRespuestaDTO,
+    summary="Generar reporte dinámico a partir de prompt, texto o parámetros estructurados",
+    description="Permite especificar fuente de datos, columnas deseadas, criterios de selección y formato (PDF, Excel o Ambos), ya sea estructuradamente o interpretado de un prompt."
+)
+async def generar_reporte_dinamico(
+    payload: ReporteDinamicoRequest,
+    usuario: UsuarioAutenticado = Depends(validar_operador_guard)
+):
+    logger.info(f"[Reportes Dinámicos] Solicitud autorizada para {usuario.email} ({usuario.rol}) | Fuente: {payload.fuente_datos}")
+    try:
+        respuesta = await reports_service_default.procesar_reporte_dinamico(payload)
+        return respuesta
+    except Exception as e:
+        logger.error(f"Error generando reporte dinámico: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error durante la generación del reporte dinámico: {str(e)}"
+        )
+
+
+@reports_router.post(
+    "/generar-dinamico-voz",
+    response_model=ReporteDinamicoRespuestaDTO,
+    summary="Generar reporte dinámico a partir de nota de voz",
+    description="Transcribe con Faster-Whisper la nota de voz del comandante, extrae inteligentemente fuente, columnas, criterios y formato, y compila los artefactos multimodales."
+)
+async def generar_reporte_dinamico_voz(
+    archivo_audio: UploadFile = File(..., description="Nota de voz del comandante (WAV, MP3, OGG, WebM)"),
+    voz_tts: str = Query("es-BO-MarceloNeural", description="Voz neural Edge-TTS para el briefing radial"),
+    usuario: UsuarioAutenticado = Depends(validar_operador_guard)
+):
+    logger.info(f"[Reportes Dinámicos Voz] Solicitud autorizada para {usuario.email} ({usuario.rol})")
+    filename = archivo_audio.filename or "audio.wav"
+    ext = filename.split(".")[-1].lower() if "." in filename else "wav"
+    if ext not in EXTENSIONES_AUDIO_VALIDAS:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Extensión de audio '{ext}' no soportada. Permitidas: {', '.join(EXTENSIONES_AUDIO_VALIDAS)}"
+        )
+
+    try:
+        contenido_audio = await archivo_audio.read()
+        if len(contenido_audio) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="El archivo de audio recibido está vacío."
+            )
+        if len(contenido_audio) > MAX_AUDIO_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="El archivo de audio excede los 25 MB permitidos."
+            )
+
+        respuesta = await reports_service_default.procesar_reporte_dinamico_voz(
+            audio_bytes=contenido_audio,
+            extension=ext,
+            voz_tts=voz_tts
+        )
+        return respuesta
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generando reporte dinámico por voz: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error durante el procesamiento del reporte dinámico por voz: {str(e)}"
+        )
 
 
 @reports_router.post(

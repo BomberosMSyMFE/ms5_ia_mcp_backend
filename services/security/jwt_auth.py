@@ -19,8 +19,8 @@ JWT_SECRET = os.getenv("JWT_SECRET", "super_secreto_bomberos_jwt_key_nataly_2026
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 COOKIE_NAME = os.getenv("COOKIE_NAME", "token_sesion")
 
-# Roles tácticos autorizados para operar la consola de Sala de Crisis y emitir reportes
-ROLES_TACTICOS_PERMITIDOS = ["OPERADOR", "ADMINISTRADOR", "ADMIN"]
+# Roles autorizados para consultar y emitir reportes tácticos en MS-05
+ROLES_TACTICOS_PERMITIDOS = ["OPERADOR", "ADMINISTRADOR", "ADMIN", "BOMBERO"]
 
 # Soporte OpenAPI Bearer para Swagger UI interactivo
 bearer_scheme = HTTPBearer(auto_error=False)
