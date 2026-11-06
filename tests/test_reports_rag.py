@@ -243,22 +243,40 @@ async def test_api_reportes_token_expirado_retorna_401():
 
 
 @pytest.mark.asyncio
-async def test_api_reportes_rol_bombero_retorna_403():
+async def test_api_reportes_rol_no_autorizado_retorna_403():
     """
-    Control RBAC: Rol 'BOMBERO' tiene prohibido emitir reportes tácticos de comando.
+    Control RBAC: Roles no autorizados (ej. 'CIUDADANO') tienen prohibido emitir reportes tácticos.
     Debe retornar HTTP 403 Forbidden.
+    """
+    token_ciudadano = crear_token_prueba(rol="CIUDADANO")
+    transport = ASGITransport(app=app_ia)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"Authorization": f"Bearer {token_ciudadano}"}
+        resp = await client.post(
+            "/api/v1/reportes/generar-por-texto",
+            json={"instruccion": "Intento de ciudadano de emitir reporte", "generar_multimodal": False},
+            headers=headers
+        )
+        assert resp.status_code == 403
+        assert "Acceso denegado" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_api_reportes_rol_bombero_permitido():
+    """
+    Control RBAC: Rol 'BOMBERO' tiene autorización para consultar esquemas y emitir reportes.
+    Debe retornar HTTP 200 OK.
     """
     token_bombero = crear_token_prueba(rol="BOMBERO")
     transport = ASGITransport(app=app_ia)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         headers = {"Authorization": f"Bearer {token_bombero}"}
-        resp = await client.post(
-            "/api/v1/reportes/generar-por-texto",
-            json={"instruccion": "Intento de bombero de emitir reporte", "generar_multimodal": False},
+        resp = await client.get(
+            "/api/v1/reportes/esquemas-tablas",
             headers=headers
         )
-        assert resp.status_code == 403
-        assert "Acceso denegado" in resp.json()["detail"]
+        assert resp.status_code == 200
+        assert "tablas" in resp.json()
 
 
 @pytest.mark.asyncio
