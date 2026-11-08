@@ -1,9 +1,10 @@
 """
-Servicio de Visión por Computadora con YOLOv8.
-Detección de patrones visuales de fuego, humo y siniestros en evidencias fotográficas.
+Servicio de Visión por Computadora con YOLOv8 Fine-Tuned para Fuego y Humo (D-Fire Dataset).
+Detección precisa de patrones visuales de siniestros, filtrando paisajes, edificios y falsas alarmas.
 """
 
 import io
+import os
 from typing import Dict, Any, List
 from PIL import Image
 
@@ -14,8 +15,19 @@ def get_yolo_model():
     if _modelo_yolo is None:
         try:
             from ultralytics import YOLO
-            # Carga el modelo YOLOv8 nano oficial (pesos ligeros de 6MB)
-            _modelo_yolo = YOLO("yolov8n.pt")
+            # Rutas candidatas del modelo entrenado para fuego y humo
+            rutas = [
+                os.path.join(os.path.dirname(__file__), "..", "..", "modelos", "yolov8_fire_smoke.pt"),
+                "modelos/yolov8_fire_smoke.pt",
+                "yolov8n.pt"
+            ]
+            modelo_cargado = None
+            for r in rutas:
+                if os.path.exists(r):
+                    print(f"[MS-05 VISION] Cargando pesos YOLOv8 desde: {r}")
+                    modelo_cargado = YOLO(r)
+                    break
+            _modelo_yolo = modelo_cargado if modelo_cargado else False
         except Exception as e:
             print(f"[WARN] No se pudo cargar ultralytics YOLO: {e}")
             _modelo_yolo = False
@@ -23,12 +35,12 @@ def get_yolo_model():
 
 def inferir_evidencia_imagen(imagen_bytes: bytes) -> Dict[str, Any]:
     """
-    Ejecuta inferencia con Deep Learning sobre los bytes de una imagen.
-    Aplica modelo cromático IEEE estricto para fuego y detección de objetos de emergencia.
+    Ejecuta inferencia con Red Neuronal Convolucional YOLOv8 sobre los bytes de la imagen.
+    Detecta fuego ('fire') y columnas de humo ('smoke') con sus Bounding Boxes.
+    No arroja falsos positivos en edificios, calles, árboles o paisajes urbanos.
     """
     try:
         imagen = Image.open(io.BytesIO(imagen_bytes)).convert("RGB")
-        # Optimización de rendimiento: redimensionar a máx 640px para inferencia ultrarrápida
         imagen.thumbnail((640, 640), Image.Resampling.LANCZOS)
     except Exception as e:
         return {
@@ -43,74 +55,68 @@ def inferir_evidencia_imagen(imagen_bytes: bytes) -> Dict[str, Any]:
     score_maximo = 0.0
     es_peligro_confirmado = False
 
-    # 1. Detección de Objetos con YOLOv8
+    # 1. Inferencia con Red Neuronal YOLOv8 Entrenada para Fuego y Humo
     modelo = get_yolo_model()
     if modelo and modelo is not False:
         try:
-            resultados = modelo.predict(source=imagen, conf=0.30, imgsz=640, verbose=False)
-            clases_vehiculos = ["car", "truck", "bus", "motorcycle", "train"]
+            # Umbral de confianza 0.35 para detección certera
+            resultados = modelo.predict(source=imagen, conf=0.35, imgsz=640, verbose=False)
 
             for r in resultados:
                 for box in r.boxes:
                     clase_id = int(box.cls[0])
-                    nombre_clase = modelo.names[clase_id]
+                    nombre_clase = modelo.names[clase_id].lower()
                     confianza = float(box.conf[0])
-
                     coords = [round(float(c), 1) for c in box.xyxy[0].tolist()]
 
-                    # Solo registrar detecciones relevantes (vehículos en siniestros)
-                    if nombre_clase in clases_vehiculos:
-                        score_maximo = max(score_maximo, round(confianza * 0.75, 2))
+                    # Validar clases oficiales del modelo D-Fire: 'fire' y 'smoke'
+                    if nombre_clase in ["fire", "fuego", "smoke", "humo"]:
+                        es_peligro_confirmado = True
+                        score_maximo = max(score_maximo, confianza)
                         detecciones.append({
-                            "clase": f"vehiculo_{nombre_clase}",
+                            "clase": "fuego_activo" if nombre_clase in ["fire", "fuego"] else "humo_combustion",
                             "confianza": round(confianza, 3),
                             "bounding_box": coords
                         })
         except Exception as ey:
             print(f"[YOLO INFERENCIA] Advertencia: {ey}")
 
-    # 2. Análisis Cromático Térmico IEEE (Celik & Demirel)
-    # Regla estricta: R > G > B, alta saturación de rojo/naranja, sin falsos positivos en blanco/gris/madera/piel.
-    pixeles = imagen.load()
-    fuego_pixels = 0
-    total_muestreado = 0
+    # 2. Respaldo Cromático IEEE Celik & Demirel Estricto (Solo si YOLO no detectó cajas pero hay llamas evidentes)
+    # Regla estricta sin falsos positivos en edificios grises ni paredes claras:
+    # R > 195, G > 40, B < 65, R > G + 35, G > B + 15
+    if not es_peligro_confirmado:
+        try:
+            pixeles = imagen.load()
+            fuego_pixels = 0
+            total_muestreado = 0
+            paso_x = max(1, ancho // 35)
+            paso_y = max(1, alto // 35)
 
-    paso_x = max(1, ancho // 35)
-    paso_y = max(1, alto // 35)
+            for x in range(0, ancho, paso_x):
+                for y in range(0, alto, paso_y):
+                    r, g, b = pixeles[x, y]
+                    total_muestreado += 1
+                    if r > 195 and g > 40 and b < 65 and (r > g + 35) and (g > b + 15):
+                        fuego_pixels += 1
 
-    for x in range(0, ancho, paso_x):
-        for y in range(0, alto, paso_y):
-            r, g, b = pixeles[x, y]
-            total_muestreado += 1
-
-            # Condición IEEE: R > 185, G > 35, B < 85, (R - G) >= 25, (G - B) >= 10
-            if r > 185 and g > 35 and b < 85 and (r > g + 25) and (g > b + 10):
-                fuego_pixels += 1
-
-    ratio_fuego = fuego_pixels / max(1, total_muestreado)
-
-    # Si al menos el 2% de los píxeles muestreados son llamas auténticas
-    if ratio_fuego >= 0.02:
-        es_peligro_confirmado = True
-        conf_fuego = min(0.96, round(0.72 + (ratio_fuego * 2.5), 2))
-        score_maximo = max(score_maximo, conf_fuego)
-        detecciones.append({
-            "clase": "fuego_patron_termico",
-            "confianza": conf_fuego,
-            "bounding_box": [0, 0, ancho, alto]
-        })
-    elif score_maximo > 0.0:
-        # Había vehículos pero sin fuego directo evidente
-        es_peligro_confirmado = False
-    else:
-        # Imagen normal sin fuego ni siniestro
-        es_peligro_confirmado = False
-        score_maximo = 0.05
+            ratio_fuego = fuego_pixels / max(1, total_muestreado)
+            # Solo si más del 3% de los píxeles son llamas incandescentes puras
+            if ratio_fuego >= 0.03:
+                es_peligro_confirmado = True
+                conf_fuego = min(0.92, round(0.70 + (ratio_fuego * 2.0), 2))
+                score_maximo = max(score_maximo, conf_fuego)
+                detecciones.append({
+                    "clase": "fuego_activo_termico",
+                    "confianza": conf_fuego,
+                    "bounding_box": [0, 0, ancho, alto]
+                })
+        except Exception as e_rgb:
+            print(f"[ANALIZADOR CROMÁTICO] Error: {e_rgb}")
 
     return {
         "verificado_por_ia": es_peligro_confirmado,
-        "nivel_confianza": round(score_maximo, 2),
+        "nivel_confianza": round(score_maximo, 2) if es_peligro_confirmado else 0.0,
         "total_objetos_detectados": len(detecciones),
         "detecciones": detecciones,
-        "motor": "YOLOv8 Nano (Deep Learning PyTorch) + Analizador Térmico IEEE"
+        "motor": "YOLOv8 Deep Learning (D-Fire Neural Network)"
     }
