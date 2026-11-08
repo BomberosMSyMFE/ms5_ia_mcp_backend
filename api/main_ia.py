@@ -16,6 +16,8 @@ from services.nlp_triage.nlp_triage import clasificar_urgencia_texto
 from api.routers.reports_router import reports_router
 from api.routers.mcp_router import mcp_router
 from api.routers.maintenance_router import maintenance_router
+from api.routers.agente_router import agente_router
+from api.routers.ml_router import ml_router
 
 app_ia = FastAPI(
     title="MS-05 IA Core & MCP Security Server",
@@ -27,7 +29,9 @@ app_ia = FastAPI(
         "- **Seguridad MCP & Validador AST (Nataly):** Inspección sintáctica estricta con `sqlglot` y bloqueo anti-inyección.\n"
         "- **Visión Artificial (Jael):** Clasificación de evidencia fotográfica con YOLOv8.\n"
         "- **Triaje NLP (Jael):** Clasificación automática de severidad en denuncias ciudadanas.\n"
-        "- **Mantenimiento Predictivo ML (Jael):** Clasificación y regresión Random Forest para motobombas y mangueras."
+        "- **Mantenimiento Predictivo ML (Jael):** Clasificación y regresión Random Forest para motobombas y mangueras.\n"
+        "- **Agente Autónomo ReAct (Maikol):** Razonamiento cognitivo (Thought -> Action -> Observation) y despacho táctico Human-in-the-Loop.\n"
+        "- **ML Espacial DBSCAN (Maikol):** Clustering geoespacial no supervisado con Haversine para detección de hotspots y zonas críticas."
     )
 )
 
@@ -51,6 +55,8 @@ app_ia.add_middleware(
 app_ia.include_router(reports_router)
 app_ia.include_router(mcp_router)
 app_ia.include_router(maintenance_router)
+app_ia.include_router(agente_router)
+app_ia.include_router(ml_router)
 
 
 # =========================================================================
@@ -100,6 +106,14 @@ async def root():
                     "POST /api/v1/mantenimiento/auditar-lote",
                     "GET /api/v1/mantenimiento/umbrales"
                 ]
+            },
+            "modulo_maikol_agente_dbscan": {
+                "descripcion": "Agente Despachador Autónomo ReAct y Clustering Geoespacial DBSCAN de Focos Críticos",
+                "endpoints": [
+                    "POST /api/v1/agente/despacho-tactico",
+                    "POST /api/v1/ml/hotspots",
+                    "GET /api/v1/ml/hotspots/demo"
+                ]
             }
         }
     }
@@ -111,7 +125,15 @@ async def health():
         "status": "HEALTHY",
         "service": "ms5_ia_mcp_backend",
         "version": "2.0.0",
-        "modulos_activos": ["RAG_VOICE_REPORTS", "AST_MCP_SECURITY", "VISION_YOLO", "NLP_TRIAGE", "PREDICTIVE_MAINTENANCE"]
+        "modulos_activos": [
+            "RAG_VOICE_REPORTS",
+            "AST_MCP_SECURITY",
+            "VISION_YOLO",
+            "NLP_TRIAGE",
+            "PREDICTIVE_MAINTENANCE",
+            "REACT_TACTICAL_AGENT",
+            "DBSCAN_SPATIAL_CLUSTERING"
+        ]
     }
 
 
