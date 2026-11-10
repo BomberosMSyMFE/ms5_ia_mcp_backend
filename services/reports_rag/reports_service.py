@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from services.reports_rag.whisper_service import WhisperService, whisper_service_default
 from services.reports_rag.rag_engine import RAGEngine, rag_engine_default
 from services.reports_rag.multimodal_generator import MultimodalGenerator, multimodal_generator_default
+from services.mcp_security.ast_validator import TOKENS_MODIFICACION_PROHIBIDOS
 
 logger = logging.getLogger("reports_service")
 
@@ -158,6 +159,36 @@ class ReportsService:
         inicio: datetime.datetime,
         etapas_previas: list[str]
     ) -> ReporteRespuestaDTO:
+        # 0. Verificación Léxica y Sintáctica AST de Seguridad (Capa 2 Defensiva)
+        tokens_en_query = {word.strip(";(),\"'").upper() for word in (texto_comando or "").strip().split()}
+        tokens_prohibidos = tokens_en_query.intersection(TOKENS_MODIFICACION_PROHIBIDOS)
+        if tokens_prohibidos:
+            logger.warning(f"[SEGURIDAD AST] Comando destructivo o inyección SQL rechazada: {list(tokens_prohibidos)}")
+            etapas = list(etapas_previas) + [
+                "2. Análisis Sintáctico AST (sqlglot) - Capa Defensiva",
+                "3. Fase Final: Bloqueo Defensivo por Detección de Tokens Destructivos"
+            ]
+            adv_msg = (
+                f"ADVERTENCIA DE SEGURIDAD AST (Capa 2 Defensiva): "
+                f"Intento de comando no autorizado o destructivo detectado ('{', '.join(sorted(tokens_prohibidos))}'). "
+                f"La instrucción ha sido bloqueada por la capa de verificación sintáctica. No se devolverá ninguna tabla de datos."
+            )
+            fin = datetime.datetime.now()
+            duracion_ms = round((fin - inicio).total_seconds() * 1000, 2)
+            return ReporteRespuestaDTO(
+                id_reporte=f"REP-BLOQ-{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                resumen_ejecutivo=adv_msg,
+                markdown_completo=f"# ALERTA DE SEGURIDAD TÁCTICA\n\n{adv_msg}\n\n**Comando Ingresado:** `{texto_comando}`",
+                orden_dictada=texto_comando,
+                recursos_involucrados={"camiones": [], "personal_estimado": 0, "insumos_clave": []},
+                descargas={"pdf": "", "excel": "", "audio": ""},
+                tiempo_generacion_ms=duracion_ms,
+                origen="TEXTO_DIRECTO",
+                datos_tabla=None,
+                cuadrante="RECHAZADO",
+                comando_detectado=f"BLOQUEO_{list(tokens_prohibidos)[0]}"
+            )
+
         etapas = list(etapas_previas)
         
         # Generar identificador de reporte único y trazable
@@ -316,6 +347,45 @@ class ReportsService:
         criterios = dict(request.criterios) if request.criterios else {}
         formato = request.formato.upper() if request.formato else None
         prompt = request.instruccion_prompt
+
+        # 0. Verificación Léxica y Sintáctica AST de Seguridad (Capa 2 Defensiva)
+        texto_a_evaluar = f"{prompt or ''} {criterios.get('filtro_libre', '')}".strip()
+        if texto_a_evaluar:
+            tokens_en_query = {word.strip(";(),\"'").upper() for word in texto_a_evaluar.split()}
+            tokens_prohibidos = tokens_en_query.intersection(TOKENS_MODIFICACION_PROHIBIDOS)
+            if tokens_prohibidos:
+                logger.warning(f"[SEGURIDAD AST] Intento de modificación destructiva detectado: {list(tokens_prohibidos)}")
+                etapas = [
+                    "1. Ingesta de Prompt Táctico",
+                    "2. Análisis Sintáctico AST (sqlglot) - Capa de Seguridad Defensiva",
+                    "3. Fase Final: Bloqueo Defensivo por Detección de Tokens Destructivos"
+                ]
+                adv_msg = (
+                    f"ADVERTENCIA DE SEGURIDAD AST (Capa 2 Defensiva): "
+                    f"Intento de comando no autorizado o destructivo detectado ('{', '.join(sorted(tokens_prohibidos))}'). "
+                    f"La instrucción ha sido bloqueada por la capa de verificación sintáctica. No se devolverá ninguna tabla de datos."
+                )
+                fin = datetime.datetime.now()
+                duracion_ms = round((fin - inicio).total_seconds() * 1000, 2)
+                return ReporteDinamicoRespuestaDTO(
+                    id_reporte=f"REP-BLOQ-{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    fecha_emision=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    fuente_datos="seguridad_ast",
+                    columnas=[],
+                    criterios_aplicados={"alerta_seguridad": adv_msg},
+                    total_registros=0,
+                    formato=formato or "AMBOS",
+                    instruccion_prompt=prompt,
+                    totales_calculados={},
+                    registros=[],
+                    resumen_radial=f"Alerta: Comando destructivo detectado ({', '.join(sorted(tokens_prohibidos))}). Solicitud bloqueada.",
+                    markdown_url="",
+                    pdf_url="",
+                    excel_url="",
+                    audio_url="",
+                    duracion_proceso_ms=duracion_ms,
+                    etapas_completadas=etapas
+                )
 
         # 1. Extracción inteligente si se proporcionó un prompt
         if prompt and prompt.strip():
