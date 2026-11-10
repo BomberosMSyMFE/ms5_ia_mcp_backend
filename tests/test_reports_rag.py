@@ -766,5 +766,25 @@ def test_clasificacion_flota_multi_estado_y_alias_unidad(rag):
     assert "unidades" in res_uds["columnas"]
 
 
+@pytest.mark.asyncio
+async def test_bloqueo_seguridad_ast_comando_drop():
+    """
+    Verifica que si un usuario o atacante ingresa 'DROP * from incidentes' o similar,
+    el pipeline de reportes dinámicos salte a la fase final de verificación,
+    bloquee la consulta y devuelva 0 registros sin proyectar la tabla de datos.
+    """
+    from services.reports_rag.reports_service import reports_service_default, ReporteDinamicoRequest
+
+    req = ReporteDinamicoRequest(
+        instruccion_prompt="DROP * from incidentes me;"
+    )
+    res = await reports_service_default.procesar_reporte_dinamico(req)
+    assert res.total_registros == 0
+    assert len(res.registros) == 0
+    assert "ADVERTENCIA DE SEGURIDAD AST" in res.criterios_aplicados.get("alerta_seguridad", "")
+    assert "DROP" in res.criterios_aplicados.get("alerta_seguridad", "")
+    assert any("Bloqueo Defensivo" in e for e in res.etapas_completadas)
+
+
 
 
