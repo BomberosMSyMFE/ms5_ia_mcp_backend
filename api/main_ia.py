@@ -19,22 +19,6 @@ from api.routers.maintenance_router import maintenance_router
 from api.routers.agente_router import agente_router
 from api.routers.ml_router import ml_router
 
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan_ia(app: FastAPI):
-    try:
-        from services.computer_vision.vision_service import get_yolo_model
-        model = get_yolo_model()
-        if model:
-            print("[MS-05 STARTUP] Pre-calentando motor YOLOv8...", flush=True)
-            import numpy as np
-            model.predict(source=np.zeros((64, 64, 3), dtype=np.uint8), imgsz=64, verbose=False)
-            print("[MS-05 STARTUP] Motor YOLOv8 pre-calentado y listo para inferencia a 300ms.", flush=True)
-    except Exception as e:
-        print(f"[MS-05 STARTUP] Aviso precalentamiento YOLO: {e}", flush=True)
-    yield
-
 app_ia = FastAPI(
     title="MS-05 IA Core & MCP Security Server",
     version="2.0.0",
@@ -48,8 +32,7 @@ app_ia = FastAPI(
         "- **Mantenimiento Predictivo ML (Jael):** Clasificación y regresión Random Forest para motobombas y mangueras.\n"
         "- **Agente Autónomo ReAct (Maikol):** Razonamiento cognitivo (Thought -> Action -> Observation) y despacho táctico Human-in-the-Loop.\n"
         "- **ML Espacial DBSCAN (Maikol):** Clustering geoespacial no supervisado con Haversine para detección de hotspots y zonas críticas."
-    ),
-    lifespan=lifespan_ia
+    )
 )
 
 # Configuración estricta de CORS con credenciales (W3C Standard)

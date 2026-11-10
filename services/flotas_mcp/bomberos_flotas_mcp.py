@@ -1,7 +1,10 @@
 import os
 import math
 import logging
-import psycopg2
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 import httpx
 from typing import List, Dict, Any, Optional
 

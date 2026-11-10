@@ -156,3 +156,48 @@ async def invocar_herramienta_mcp(tool_name: str, payload: EjecutarHerramientaGe
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Herramienta MCP '{tool_name}' no encontrada en el catálogo."
         )
+
+
+class CallToolPayloadDTO(BaseModel):
+    nombreHerramienta: str
+    argumentos: Dict[str, Any] = Field(default_factory=dict)
+
+
+@mcp_router.post(
+    "/call-tool",
+    summary="Invocación unificada de herramientas MCP (Compatibilidad Maikol MFE-02)",
+    description="Permite a clientes externos invocar herramientas MCP pasando nombreHerramienta y argumentos."
+)
+@mcp_router.post(
+    "/mcp/call-tool",
+    summary="Invocación unificada de herramientas MCP (Alias redundante para compatibilidad de rutas)",
+    include_in_schema=False
+)
+async def call_tool_compat(payload: CallToolPayloadDTO):
+    tool_name = payload.nombreHerramienta
+    params = payload.argumentos
+
+    if tool_name == "verificar_hidrantes_cercanos":
+        validado = HidrantesInput(**params)
+        datos = verificar_hidrantes_cercanos(
+            latitud=validado.latitud,
+            longitud=validado.longitud,
+            radio_metros=validado.radio_metros
+        )
+        return {"resultado": datos, "exito": True}
+
+    elif tool_name == "consultar_camiones_disponibles":
+        validado = CamionesInput(**params)
+        datos = consultar_camiones_disponibles(cuadrante=validado.cuadrante or "TODOS")
+        return {"resultado": datos, "exito": True}
+
+    elif tool_name == "consultar_stock_estacion":
+        validado = StockInput(**params)
+        datos = consultar_stock_estacion(
+            nombre_estacion=validado.nombre_estacion,
+            categoria=validado.categoria
+        )
+        return {"resultado": datos, "exito": True}
+
+    return {"resultado": [], "exito": False, "error": f"Herramienta {tool_name} no encontrada"}
+

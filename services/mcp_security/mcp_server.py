@@ -11,8 +11,12 @@ import os
 import logging
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-import psycopg2
-from psycopg2.extras import RealDictCursor
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    RealDictCursor = None
 
 from .ast_validator import validar_consulta_ast, ASTValidator
 
@@ -121,11 +125,18 @@ def verificar_hidrantes_cercanos(latitud: float, longitud: float, radio_metros: 
         distancia = round((dx**2 + dy**2)**0.5, 1)
 
         if distancia <= radio_metros:
+            operativo = (h["estado"] == "OPERATIVO")
             resultados.append({
                 "id": h["id"],
+                "latitud": float(h["latitud"]),
+                "longitud": float(h["longitud"]),
                 "caudal_litros_min": h["caudal_litros_min"],
+                "caudalLitrosMinuto": h["caudal_litros_min"],
                 "estado": h["estado"],
+                "operativo": operativo,
                 "distancia_metros": distancia,
+                "distanciaMetros": distancia,
+                "presionPsi": 65.0,
                 "zona": h["zona"]
             })
     return sorted(resultados, key=lambda x: x["distancia_metros"])
