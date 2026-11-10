@@ -21,6 +21,16 @@ from openpyxl.utils import get_column_letter
 
 logger = logging.getLogger("multimodal_generator")
 
+# Fallback de metadatos de columnas operativas y dinámicas
+COLUMNAS_METADATA_FALLBACK = {
+    "unidades": {"id": "unidades", "label": "Unidades Despachadas", "tipo": "number", "unidad": "uds", "es_totalizable": True},
+    "tipo_acople": {"id": "tipo_acople", "label": "Tipo de Acople", "tipo": "string", "unidad": "", "es_totalizable": False},
+    "valor_estimado_bs": {"id": "valor_estimado_bs", "label": "Valor Estimado (Bs)", "tipo": "number", "unidad": "Bs", "es_totalizable": True},
+    "estado_stock": {"id": "estado_stock", "label": "Estado de Stock", "tipo": "string", "unidad": "", "es_totalizable": False},
+    "camion_asignado": {"id": "camion_asignado", "label": "Camión Asignado", "tipo": "string", "unidad": "", "es_totalizable": False},
+}
+
+
 
 class MultimodalGenerator:
     """
@@ -48,6 +58,8 @@ class MultimodalGenerator:
         hidrantes_tot = getattr(metricas, "hidrantes_totales", 0)
         litros_espuma = getattr(metricas, "litros_espuma_disponibles", 0)
         siniestros_act = getattr(metricas, "total_siniestros_activos", 0)
+        total_agua_fmt = f"{total_agua:,}".replace(",", ".")
+        litros_espuma_fmt = f"{litros_espuma:,}".replace(",", ".")
         resumen_radial = datos_reporte.get("resumen_radial", "")
 
         crudos = datos_reporte.get("datos_crudos", {})
@@ -414,7 +426,7 @@ class MultimodalGenerator:
     <div class="kpi-grid clearfix">
         <div class="kpi-col">
             <div class="kpi-label">Volumen Hídrico</div>
-            <div class="kpi-value">{total_agua:,} L</div>
+            <div class="kpi-value">{total_agua_fmt} L</div>
             <div class="kpi-sub">{pct_agua}% Capacidad Total</div>
         </div>
         <div class="kpi-col">
@@ -429,7 +441,7 @@ class MultimodalGenerator:
         </div>
         <div class="kpi-col">
             <div class="kpi-label">Espumógeno AFFF</div>
-            <div class="kpi-value">{litros_espuma:,} L</div>
+            <div class="kpi-value">{litros_espuma_fmt} L</div>
             <div class="kpi-sub">Stock Base Central</div>
         </div>
     </div>
@@ -498,7 +510,7 @@ class MultimodalGenerator:
 
 </body>
 </html>
-""".replace(",", ".")
+"""
 
         if weasyprint is None:
             raise RuntimeError("WeasyPrint no está disponible en este entorno local (falta GTK/GObject). Use el contenedor Docker Linux.")
@@ -757,6 +769,9 @@ class MultimodalGenerator:
         esquema = CATALOGO_ESQUEMAS_TABLAS.get(fuente_datos, {})
         nombre_tabla = esquema.get("nombre_legible", fuente_datos.capitalize())
         meta_cols = {c["id"]: c for c in esquema.get("columnas", [])}
+        for k, v in COLUMNAS_METADATA_FALLBACK.items():
+            if k not in meta_cols:
+                meta_cols[k] = v
 
         # Generar etiquetas de cabecera HTML
         th_html = ""
@@ -764,7 +779,7 @@ class MultimodalGenerator:
             meta = meta_cols.get(col_id, {})
             label = meta.get("label", col_id.upper())
             tipo = meta.get("tipo", "string")
-            align = "text-right" if tipo == "number" else ("text-center" if col_id in ["estado", "severidad", "cuadrante"] else "text-left")
+            align = "text-right" if tipo == "number" else ("text-center" if col_id in ["estado", "severidad", "cuadrante", "estado_stock"] else "text-left")
             th_html += f'<th class="{align}">{label}</th>'
 
         # Generar filas de datos HTML
@@ -775,14 +790,14 @@ class MultimodalGenerator:
                 val = reg.get(col_id, "")
                 meta = meta_cols.get(col_id, {})
                 tipo = meta.get("tipo", "string")
-                if col_id in ["estado", "severidad"]:
-                    val_str = str(val)
-                    if val_str in ["OPERATIVO", "DISPONIBLE", "CONTROLADO", "BAJA"]:
-                        badge = f'<span class="badge-success">{val_str}</span>'
-                    elif val_str in ["CRITICA", "FUERA_DE_SERVICIO", "EN_COMBATE"]:
-                        badge = f'<span class="badge-danger">{val_str}</span>'
+                if col_id in ["estado", "severidad", "estado_stock"]:
+                    val_str = str(val).upper()
+                    if val_str in ["OPERATIVO", "DISPONIBLE", "CONTROLADO", "BAJA", "NORMAL", "OPTIMO"]:
+                        badge = f'<span class="badge-success">{val}</span>'
+                    elif val_str in ["CRITICA", "FUERA_DE_SERVICIO", "EN_COMBATE", "CRITICO", "AGOTADO"]:
+                        badge = f'<span class="badge-danger">{val}</span>'
                     else:
-                        badge = f'<span class="badge-warning">{val_str}</span>'
+                        badge = f'<span class="badge-warning">{val}</span>'
                     td_html += f'<td class="text-center">{badge}</td>'
                 elif tipo == "number" and isinstance(val, (int, float)):
                     td_html += f'<td class="text-right font-mono">{val:,}</td>'.replace(",", ".")
@@ -1057,6 +1072,9 @@ class MultimodalGenerator:
         esquema = CATALOGO_ESQUEMAS_TABLAS.get(fuente_datos, {})
         nombre_tabla = esquema.get("nombre_legible", fuente_datos.capitalize())
         meta_cols = {c["id"]: c for c in esquema.get("columnas", [])}
+        for k, v in COLUMNAS_METADATA_FALLBACK.items():
+            if k not in meta_cols:
+                meta_cols[k] = v
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -1119,7 +1137,7 @@ class MultimodalGenerator:
                 if tipo == "number" and isinstance(val, (int, float)):
                     cell.number_format = '#,##0'
                     cell.alignment = Alignment(horizontal="right")
-                elif col_id in ["estado", "severidad", "cuadrante"]:
+                elif col_id in ["estado", "severidad", "cuadrante", "estado_stock"]:
                     cell.alignment = Alignment(horizontal="center")
             curr_r += 1
 
@@ -1159,6 +1177,92 @@ class MultimodalGenerator:
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
+
+    def generar_markdown_dinamico(self, datos_reporte_dinamico: Dict[str, Any]) -> str:
+        """
+        Compila la representación en Markdown estructurado y enriquecido para reportes dinámicos
+        cumpliendo con la taxonomía multimodal del microservicio ms5_ia_mcp_backend.
+        """
+        if "markdown" in datos_reporte_dinamico and datos_reporte_dinamico["markdown"]:
+            return datos_reporte_dinamico["markdown"]
+
+        fuente_datos = datos_reporte_dinamico.get("fuente_datos", "siniestros")
+        id_reporte = datos_reporte_dinamico.get("id_reporte", "REP-DIN-001")
+        fecha = datos_reporte_dinamico.get("fecha_emision", "2026-11-09 10:00:00")
+        columnas = datos_reporte_dinamico.get("columnas", [])
+        registros = datos_reporte_dinamico.get("registros", [])
+        criterios = datos_reporte_dinamico.get("criterios", {})
+        totales = datos_reporte_dinamico.get("totales", {})
+        prompt = datos_reporte_dinamico.get("instruccion_prompt", "")
+        resumen_radial = datos_reporte_dinamico.get("resumen_radial", "")
+
+        from services.reports_rag.rag_engine import CATALOGO_ESQUEMAS_TABLAS
+        esquema = CATALOGO_ESQUEMAS_TABLAS.get(fuente_datos, {})
+        nombre_tabla = esquema.get("nombre_legible", fuente_datos.capitalize())
+        meta_cols = {c["id"]: c for c in esquema.get("columnas", [])}
+        for k, v in COLUMNAS_METADATA_FALLBACK.items():
+            if k not in meta_cols:
+                meta_cols[k] = v
+
+        encabezados_md = [meta_cols.get(c, {}).get("label", c.upper()) for c in columnas]
+        linea_header = "| " + " | ".join(encabezados_md) + " |"
+        linea_sep = "| " + " | ".join(["---"] * len(columnas)) + " |"
+
+        lineas_datos = []
+        for reg in registros:
+            fila_vals = []
+            for col_id in columnas:
+                val = reg.get(col_id, "")
+                if isinstance(val, (int, float)):
+                    fila_vals.append(f"{val:,}".replace(",", "."))
+                else:
+                    fila_vals.append(str(val))
+            lineas_datos.append("| " + " | ".join(fila_vals) + " |")
+
+        if totales and registros:
+            fila_totales_md = []
+            primera = True
+            for col_id in columnas:
+                if col_id in totales:
+                    val_tot = totales[col_id]
+                    meta = meta_cols.get(col_id, {})
+                    u = meta.get("unidad", "")
+                    u_str = f" {u}" if u else ""
+                    fila_totales_md.append(f"**{val_tot:,}{u_str}**".replace(",", "."))
+                elif primera:
+                    fila_totales_md.append("**TOTALES**")
+                    primera = False
+                else:
+                    fila_totales_md.append("-")
+            lineas_datos.append("| " + " | ".join(fila_totales_md) + " |")
+
+        cuerpo_tabla = "\n".join(lineas_datos) if lineas_datos else "| " + " | ".join(["*Sin registros*"] * len(columnas)) + " |"
+        criterios_desc = ", ".join([f"{k}: {v}" for k, v in criterios.items()]) if criterios else "Ninguno"
+        prompt_line = f"**Instrucción / Prompt:** `{prompt}`  \n" if prompt else ""
+
+        return f"""# CUERPO DE BOMBEROS SANTA CRUZ — {nombre_tabla.upper()}
+**Identificador de Reporte:** `{id_reporte}`  
+**Fecha de Emisión:** {fecha}  
+**Fuente de Datos:** {nombre_tabla} (`{fuente_datos}`)  
+**Filtros Aplicados:** {criterios_desc}  
+**Total Registros:** {len(registros)}  
+{prompt_line}**Clasificación de Seguridad:** USO OFICIAL TÁCTICO  
+
+---
+
+## 1. Briefing Radial (Alerta Táctica)
+> {resumen_radial}
+
+---
+
+## 2. Matriz de Datos ({nombre_tabla})
+{linea_header}
+{linea_sep}
+{cuerpo_tabla}
+
+---
+*Reporte compilado determinísticamente por ms5_ia_mcp_backend — Comandancia Nataly Martínez.*
+"""
 
     async def generar_audio_tts(self, texto_briefing: str, voice: str = "es-BO-MarceloNeural") -> bytes:
         """

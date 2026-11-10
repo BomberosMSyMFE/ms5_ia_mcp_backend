@@ -67,6 +67,14 @@ async def generar_reporte_dinamico(
     try:
         respuesta = await reports_service_default.procesar_reporte_dinamico(payload)
         return respuesta
+    except ValueError as e:
+        logger.warning(f"[Reportes Dinámicos] Validación / Seguridad AST rechazada: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generando reporte dinámico: {e}")
         raise HTTPException(
@@ -114,6 +122,12 @@ async def generar_reporte_dinamico_voz(
             voz_tts=voz_tts
         )
         return respuesta
+    except ValueError as e:
+        logger.warning(f"[Reportes Dinámicos Voz] Validación / Seguridad AST rechazada: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except HTTPException:
         raise
     except Exception as e:
