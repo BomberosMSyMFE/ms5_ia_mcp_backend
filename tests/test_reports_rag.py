@@ -49,27 +49,29 @@ def test_rag_extraccion_parametros(rag):
 def test_rag_calculo_metricas_zero_hallucinations(rag):
     """
     Verifica que las operaciones numéricas sean 100% exactas y calculadas en Python.
-    Flota Norte en mock:
-      CAM-B01: agua_actual=8500, cap_max=10000, estado=DISPONIBLE
-      CAM-B03: agua_actual=1800, cap_max=2000, estado=DISPONIBLE
+    Flota Norte en telemetría de Maikol:
+      B-04: agua_actual=8550, cap_max=10000, estado=EN_COMBATE
+      B-06: agua_actual=4000, cap_max=4000, estado=DISPONIBLE
     Esperado:
       total_camiones = 2
-      camiones_disponibles = 2
-      total_litros_agua = 10300
-      capacidad_max_agua = 12000
-      pct_agua = round(10300 / 12000 * 100, 1) = 85.8%
+      camiones_disponibles = 1
+      total_litros_agua = 12550
+      capacidad_max_agua = 14000
+      pct_agua = round(12550 / 14000 * 100, 1) = 89.6%
+      hidrantes_totales = 4
+      hidrantes_operativos = 4
     """
     params = ReporteParametros(cuadrante="NORTE", tipo_reporte="RECURSOS_HIDRICOS")
     datos = rag.calcular_metricas(params)
     m = datos["metricas"]
 
     assert m.total_camiones == 2
-    assert m.camiones_disponibles == 2
-    assert m.total_litros_agua == 10300
-    assert m.capacidad_max_agua == 12000
-    assert m.porcentaje_disponibilidad_agua == 85.8
-    assert m.hidrantes_totales == 2
-    assert m.hidrantes_operativos == 2
+    assert m.camiones_disponibles == 1
+    assert m.total_litros_agua == 12550
+    assert m.capacidad_max_agua == 14000
+    assert m.porcentaje_disponibilidad_agua == 89.6
+    assert m.hidrantes_totales == 4
+    assert m.hidrantes_operativos == 4
     assert m.litros_espuma_disponibles == 1450
 
 
@@ -80,14 +82,14 @@ def test_rag_sintesis_markdown_estructura(rag):
     )
     assert resultado["id_reporte"] == "REP-TEST-123"
     assert "Cuadrante NORTE" in resultado["resumen_radial"]
-    assert "10.300 litros de agua" in resultado["resumen_radial"] or "10300 litros de agua" in resultado["resumen_radial"]
+    assert "12.550 litros de agua" in resultado["resumen_radial"] or "12550 litros de agua" in resultado["resumen_radial"]
 
     md = resultado["markdown"]
     assert "# CUERPO DE BOMBEROS — INFORME EJECUTIVO DE SITUACIÓN" in md
     assert "## 1. Resumen Ejecutivo (Briefing Radial)" in md
     assert "## 2. Indicadores Clave de Desempeño (KPIs de Emergencia)" in md
     assert "## 3. Estado de la Flota Vehicular Asignada" in md
-    assert "CAM-B01" in md or "B-01-SCZ" in md
+    assert "B-04" in md or "B-06" in md or "3482-LKP" in md
 
 
 def test_generador_pdf_weasyprint(rag, generator):
@@ -142,7 +144,7 @@ async def test_reports_service_end_to_end():
 
     assert res.id_reporte.startswith("REP-")
     assert res.cuadrante == "NORTE"
-    assert res.metricas_clave["total_litros_agua"] == 10300
+    assert res.metricas_clave["total_litros_agua"] == 12550
     assert res.pdf_url is not None
     assert res.excel_url is not None
     assert len(res.etapas_completadas) == 4
@@ -586,5 +588,183 @@ async def test_api_generar_reporte_dinamico_voz():
         assert data["id_reporte"].startswith("REP-DIN-")
         assert "columnas" in data
         assert data["total_registros"] >= 0
+
+
+# =========================================================================
+# AUDITORÍA DE REPORTES TÁCTICOS (CASOS REALES DOCENTE & GUÍA DE PRUEBAS)
+# =========================================================================
+
+def test_auditoria_prompt1_siniestros_despacho_con_unidades(rag):
+    """
+    Prompt 1: Siniestros de severidad Crítica en estado En Despacho con unidades despachadas.
+    No debe desviarse a fuente flota por la palabra 'unidades'.
+    """
+    prompt = "Generar reporte dinámico de todos los siniestros de severidad Crítica en estado En Despacho. Incluir específicamente las columnas: Código de Incidente, Tipo de Emergencia, Dirección, Agua Usada en Litros y Unidades Despachadas. Activar fila de totales contables para el volumen de agua y unidades"
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "siniestros"
+    assert "codigo" in res["columnas"]
+    assert "tipo" in res["columnas"]
+    assert "direccion" in res["columnas"]
+    assert "agua_usada" in res["columnas"]
+    assert "unidades" in res["columnas"]
+    assert res["criterios"]["severidad"] == "CRITICA"
+    assert res["criterios"]["estado"] == "DESPACHADO"
+
+
+def test_auditoria_prompt2_siniestros_cuadrante_norte_criticos(rag):
+    """
+    Prompt 2: Siniestros Críticos en Cuadrante Norte con Excel y PDF.
+    """
+    prompt = "Atención Sala de Situación. Generar reporte dinámico de todos los siniestros de severidad Crítica en el Cuadrante Norte. Incluir específicamente las columnas: Código de Incidente, Tipo de Emergencia, Dirección, Agua Usada en Litros y Unidades Despachadas. Activar fila de totales contables para el volumen de agua y unidades, y compilar en formato Excel y PDF."
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "siniestros"
+    assert res["formato"] == "AMBOS"
+    assert "codigo" in res["columnas"]
+    assert "agua_usada" in res["columnas"]
+    assert "unidades" in res["columnas"]
+    assert res["criterios"]["cuadrante"] == "NORTE"
+    assert res["criterios"]["severidad"] == "CRITICA"
+
+
+def test_auditoria_prompt3_fonetica_whisper_incidente_denunciante_direccion(rag):
+    """
+    Prompt 3: Fonética degradada de Whisper ('el aire del incidente', 'que los denunció').
+    """
+    prompt = "Quiero un reporte donde me muestra todo lo incidentes actualmente se encuentran pendientes quiero saber que los denunció el aire del incidente y la dirección del incidente"
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "siniestros"
+    assert "codigo" in res["columnas"]
+    assert "denunciante" in res["columnas"]
+    assert "direccion" in res["columnas"]
+    assert res["criterios"]["estado"] == "PENDIENTE"
+
+
+def test_auditoria_prompt4_fonetica_whisper_flota_sumatoria(rag):
+    """
+    Prompt 4: Fonética degradada de Whisper en Flota ('camines', 'columnos', 'está operativo', 'te acular la suma torilla').
+    """
+    prompt = "flota de camines mostrar columnos placa, está operativo, que apacidad máxima y nivel de agua actual. Te acular la suma torilla total de agua disponible"
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "flota"
+    assert "placa" in res["columnas"]
+    assert "estado" in res["columnas"]
+    assert "capacidad_max" in res["columnas"]
+    assert "agua_actual" in res["columnas"]
+
+
+def test_auditoria_prompt5_hidrantes_tipo_acople_cuadrante_multi(rag):
+    """
+    Prompt 5: Hidrantes Operativos en Cuadrante Centro y Norte con Tipo de Acople.
+    """
+    prompt = "Control de Abastecimiento Hídrico. Compilar reporte táctico de la red de hidrantes con estado Operativo en el Cuadrante Centro y Norte. Incluir específicamente las columnas: ID Hidrante, Dirección, Caudal en Litros por Minuto, Presión en Bares y Tipo de Acople."
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "hidrantes"
+    assert "id" in res["columnas"]
+    assert "direccion" in res["columnas"]
+    assert "caudal_lpm" in res["columnas"]
+    assert "presion_bar" in res["columnas"]
+    assert "tipo_acople" in res["columnas"]
+    assert res["criterios"]["estado"] == "OPERATIVO"
+    assert "CENTRO" in res["criterios"]["cuadrante"] and "NORTE" in res["criterios"]["cuadrante"]
+
+    # Validar filtrado multi-cuadrante
+    filtrados = rag.filtrar_datos_tabla("hidrantes", res["criterios"])
+    assert len(filtrados) >= 3
+    for f in filtrados:
+        assert f["estado"] == "OPERATIVO"
+        assert f["cuadrante"] in ["CENTRO", "NORTE"]
+        assert "tipo_acople" in f
+
+
+def test_auditoria_prompt6_insumos_almacen_categoria_stock(rag):
+    """
+    Prompt 6: Almacén de insumos con categorías Químico y EPP, stock Normal y Crítico en Estación Central.
+    """
+    prompt = "Mando de Logística y Suministros. Generar reporte de inventario del almacén de insumos filtrando materiales con nivel de stock Normal y Crítico de la categoría Químico y EPP en la Estación Central. Incluir específicamente las columnas: Código Insumo, Descripción Material, Categoría, Stock Disponible, Nivel de Stock y Valor Estimado Bs."
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "insumos"
+    assert "id" in res["columnas"]
+    assert "nombre" in res["columnas"]
+    assert "categoria" in res["columnas"]
+    assert "cantidad" in res["columnas"]
+    assert "estado_stock" in res["columnas"]
+    assert "valor_estimado_bs" in res["columnas"]
+    assert "QUIMICO" in res["criterios"]["categoria"]
+    assert "EPP" in res["criterios"]["categoria"]
+    assert "Central" in res["criterios"]["estacion"]
+
+    # Validar filtrado y totales
+    filtrados = rag.filtrar_datos_tabla("insumos", res["criterios"])
+    assert len(filtrados) >= 2
+    totales = rag.calcular_totales_columnas("insumos", res["columnas"], filtrados)
+    assert totales["cantidad"] > 0
+    assert totales["valor_estimado_bs"] > 0
+
+
+def test_auditoria_prompt7_cierre_operacional_espumogeno_multi_estado(rag):
+    """
+    Prompt 7: Siniestros En Combate y Controlado en Cuadrante Sur y Oeste con espumógeno.
+    """
+    prompt = "Comando Departamental de Bomberos Santa Cruz. Generar informe de cierre operacional de siniestros en estado En Combate y Controlado en el Cuadrante Sur y Oeste. Incluir columnas: Código, Tipo, Dirección, Agua Usada, Espumógeno Utilizado y Unidades Despachadas."
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "siniestros"
+    assert "codigo" in res["columnas"]
+    assert "tipo" in res["columnas"]
+    assert "direccion" in res["columnas"]
+    assert "agua_usada" in res["columnas"]
+    assert "espuma_usada" in res["columnas"]
+    assert "unidades" in res["columnas"]
+    assert "COMBATE" in res["criterios"]["estado"] and "CONTROLADO" in res["criterios"]["estado"]
+    assert "SUR" in res["criterios"]["cuadrante"] and "OESTE" in res["criterios"]["cuadrante"]
+
+
+def test_seguridad_ast_mcp_bloqueo_ddl_dml(rag):
+    """
+    Verifica que la validación AST MCP rechace cualquier inyección DDL/DML destructiva.
+    Requisito INF512 - Ing. Rolando Martínez Canedo.
+    """
+    ataques = [
+        "DROP TABLE tb_incidentes;",
+        "DROP DATABASE bomberos_db;",
+        "TRUNCATE TABLE tb_usuarios;",
+        "DELETE FROM tb_incidentes WHERE 1=1;",
+        "ALTER TABLE tb_flotas DROP COLUMN placa;",
+        "UPDATE tb_usuarios SET rol='ADMIN';",
+        "INSERT INTO tb_incidentes VALUES ('malicioso');",
+        "SELECT * FROM tb_incidentes; -- drop table test",
+        "UNION SELECT * FROM passwords"
+    ]
+    for ataque in ataques:
+        with pytest.raises(ValueError) as excinfo:
+            rag.extraer_especificacion_reporte_dinamico(ataque)
+        assert "ACCESO DENEGADO (SEGURIDAD AST MCP)" in str(excinfo.value)
+
+
+def test_clasificacion_flota_multi_estado_y_alias_unidad(rag):
+    """
+    Verifica que un prompt de flota con 'en combate y disponibles' no sea clasificado
+    erróneamente como siniestro, y que 'la unidad' mapee a 'camion_asignado'.
+    """
+    prompt = "Quiero un reporte dinámico de la flota de camiones que se encuentran actualmente en combate o en escena y están disponibles en todos los cuadrantes. Incluir columnas: id, placa, agua actual, estado operativo."
+    res = rag.extraer_especificacion_reporte_dinamico(prompt)
+    assert res["fuente_datos"] == "flota"
+    assert "id" in res["columnas"]
+    assert "placa" in res["columnas"]
+    assert "agua_actual" in res["columnas"]
+    assert "estado" in res["columnas"]
+    assert "COMBATE" in res["criterios"]["estado"]
+    assert "DISPONIBLE" in res["criterios"]["estado"]
+
+    # Prueba de discriminación 'la unidad' (camion_asignado) vs 'unidades despachadas' (unidades)
+    p_unidad = "Reporte de siniestros críticos con la unidad y agua usada"
+    res_u = rag.extraer_especificacion_reporte_dinamico(p_unidad)
+    assert "camion_asignado" in res_u["columnas"]
+    assert "unidades" not in res_u["columnas"]
+
+    p_unidades = "Reporte de siniestros críticos con unidades despachadas y agua usada"
+    res_uds = rag.extraer_especificacion_reporte_dinamico(p_unidades)
+    assert "unidades" in res_uds["columnas"]
+
+
 
 
